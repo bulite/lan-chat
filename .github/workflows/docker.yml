@@ -22,17 +22,26 @@ jobs:
       - name: Build and smoke test
         run: |
           docker build --tag lan-chat:ci .
-          container=$(docker run -d --tmpfs /data:uid=1000,gid=1000,mode=0700 -p 127.0.0.1::8910 lan-chat:ci)
-          trap 'docker rm -f "$container" >/dev/null' EXIT
-          address=$(docker port "$container" 8910/tcp)
-          curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 "http://$address/health"
-          curl --fail --silent --show-error "http://$address/icon.png" --output /dev/null
+          container=$(docker run -d --tmpfs /data:uid=1000,gid=1000,mode=0700 lan-chat:ci)
+          trap 'docker logs "$container"; docker rm -f "$container" >/dev/null' EXIT
+          docker exec -i "$container" node --input-type=module - <<'JS'
+          import assert from 'node:assert/strict';
+          const origin = 'http://127.0.0.1:8910';
+          for (let attempt = 0; attempt < 20; attempt++) {
+            if (await fetch(origin + '/health').then(response => response.ok, () => false)) break;
+            await new Promise(resolve => setTimeout(resolve, 500));
+          }
+          assert((await fetch(origin + '/health')).ok);
+          const icon = await fetch(origin + '/icon.png');
+          assert(icon.ok);
+          assert.equal(icon.headers.get('content-type'), 'image/png');
+          JS
       - name: Publish to Docker Hub
         env:
           DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          if [[ ! "$DOCKERHUB_USERNAME" =~ ^[a-z0-9]+$ || -z "$DOCKERHUB_TOKEN" ]]; then
+          if [[ ! "$DOCKERHUB_USERNAME" =~ ^[a-z0-9_-]+$ || -z "$DOCKERHUB_TOKEN" ]]; then
             echo '::error::Set the DOCKERHUB_USERNAME Actions variable and DOCKERHUB_TOKEN Actions secret.'
             exit 1
           fi
