@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 
 // One lightweight classifier per plugin identity; its verdict only creates an
 // ordinary role job, never grants the classifier authority to execute tools.
-export function audits(db,event,selectMessage,roles){
+export function audits(db,event,selectMessage,roles,dshOrigin){
   db.exec(`CREATE TABLE IF NOT EXISTS auditor_sources(owner TEXT NOT NULL,provider TEXT NOT NULL,model TEXT NOT NULL,PRIMARY KEY(owner,provider));
     CREATE TABLE IF NOT EXISTS audit_jobs(message INTEGER NOT NULL,owner TEXT NOT NULL,provider TEXT NOT NULL,model TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',token TEXT,claimed_at INTEGER,error TEXT,PRIMARY KEY(message,owner,provider));
     CREATE TABLE IF NOT EXISTS role_blacklist(role_id TEXT NOT NULL,owner TEXT NOT NULL,room TEXT NOT NULL,blocked_at TEXT NOT NULL,reason TEXT,PRIMARY KEY(role_id,room));`);
@@ -28,7 +28,7 @@ export function audits(db,event,selectMessage,roles){
   async function route(req,res,url,member,{send,json}){
     const p=url.pathname;
     if(p==='/api/managed-auditor'&&['GET','POST'].includes(req.method)){
-      if(req.headers.origin!=='http://10.0.8.54:3080'||member.kind!=='human')return send(res,403,{error:'请在 DSH 插件中管理审计员'}),true;
+      if(!dshOrigin||req.headers.origin!==dshOrigin||member.kind!=='human')return send(res,403,{error:'请在 DSH 插件中管理审计员'}),true;
       if(req.method==='GET'){const rows=db.prepare("SELECT owner,provider,model FROM auditor_sources WHERE provider='dsh'").all();send(res,200,rows);return true;}
       const b=await json(req),source=db.prepare("SELECT models FROM role_sources WHERE owner=? AND provider='dsh'").get(b.owner);
       if(typeof b.model!=='string'||!source||b.model&&!JSON.parse(source.models).some(m=>m.id===b.model))throw Error('请选择 DSH 插件提供的模型');

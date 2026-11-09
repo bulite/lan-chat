@@ -26,16 +26,17 @@ async function body(req,limit=65536){let size=0,chunks=[];for await(const c of r
 const json=async (req,limit)=>JSON.parse((await body(req,limit)).toString()||'{}');
 const event=value=>{for(const peer of peers)peer.write(`data: ${JSON.stringify(value)}\n\n`);};
 const messageSelect=`SELECT m.id,m.room,m.text,m.created,p.id AS senderId,p.name AS sender,p.kind,f.id AS fileId,f.name AS fileName,f.size AS fileSize FROM messages m JOIN members p ON p.id=m.member LEFT JOIN files f ON f.id=m.file`;
-const roleSupport=roles(db,event,id=>comm.decorate(db.prepare(messageSelect+' WHERE m.id=?').get(id)));
+const dshOrigin=process.env.DSH_ORIGIN;
+const roleSupport=roles(db,event,id=>comm.decorate(db.prepare(messageSelect+' WHERE m.id=?').get(id)),dshOrigin);
 let auditSupport;
 const comm=communication(db,messageSelect,event,roleSupport,(...args)=>auditSupport.enqueue(...args));
-auditSupport=audits(db,event,id=>comm.decorate(db.prepare(messageSelect+' WHERE m.id=?').get(id)),roleSupport);
+auditSupport=audits(db,event,id=>comm.decorate(db.prepare(messageSelect+' WHERE m.id=?').get(id)),roleSupport,dshOrigin);
 const roleContextSupport=roleContext(db,event,comm,roleSupport,messageSelect,dir);
 const server=http.createServer(async(req,res)=>{try{
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');
  const url=new URL(req.url,'http://localhost');const p=url.pathname;
  const origin=req.headers.origin,chatOrigin='http://'+req.headers.host;
- const dshRoleOrigin=origin==='http://10.0.8.54:3080'&&(p==='/api/roles'||p==='/api/role-sources'||p==='/api/managed-auditor'||p==='/api/managed-roles'||p.startsWith('/api/managed-roles/'));
+ const dshRoleOrigin=Boolean(dshOrigin)&&origin===dshOrigin&&(p==='/api/roles'||p==='/api/role-sources'||p==='/api/managed-auditor'||p==='/api/managed-roles'||p.startsWith('/api/managed-roles/'));
  if(dshRoleOrigin){res.setHeader('Access-Control-Allow-Origin',origin);res.setHeader('Vary','Origin');}
  if(req.method==='OPTIONS'&&dshRoleOrigin){res.writeHead(204,{'Access-Control-Allow-Methods':'GET,POST,PATCH,DELETE,OPTIONS','Access-Control-Allow-Headers':'Content-Type'});return res.end();}
  if(origin&&origin!==chatOrigin&&!dshRoleOrigin&&!['GET','HEAD'].includes(req.method))return send(res,403,{error:'请求来源不允许'});

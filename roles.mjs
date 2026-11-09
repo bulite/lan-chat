@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 
 // Role jobs are separate from directed inbox deliveries: claiming a job must
 // never change the meaning of an existing inbox receipt.
-export function roles(db, event, selectMessage) {
+export function roles(db, event, selectMessage, dshOrigin) {
   db.exec(`CREATE TABLE IF NOT EXISTS roles (
     id TEXT PRIMARY KEY, owner TEXT NOT NULL, provider TEXT NOT NULL,
     name TEXT NOT NULL, model TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0
@@ -125,7 +125,7 @@ export function roles(db, event, selectMessage) {
       if(req.method==='DELETE'&&roleId){db.prepare('DELETE FROM room_roles WHERE room=? AND role_id=?').run(room,roleId);event({type:'room-roles',room});send(res,200,{ok:true});return true;}
     }
     if(p==='/api/role-sources'&&req.method==='GET'){
-      if(req.headers.origin!=='http://10.0.8.54:3080')return send(res,403,{error:'请在 DSH 插件中管理角色'}),true;
+      if(!dshOrigin||req.headers.origin!==dshOrigin)return send(res,403,{error:'请在 DSH 插件中管理角色'}),true;
       const rows=db.prepare('SELECT owner,provider,models,updated FROM role_sources ORDER BY provider,owner').all();
       send(res,200,rows.map(r=>({...r,models:JSON.parse(r.models)})));return true;
     }
@@ -141,7 +141,7 @@ export function roles(db, event, selectMessage) {
       send(res,200,db.prepare('SELECT owner,provider,models,updated FROM role_sources').all().map(r=>({...r,models:JSON.parse(r.models)})));return true;
     }
     if(p==='/api/managed-roles'&&req.method==='POST'){
-      if(req.headers.origin!=='http://10.0.8.54:3080')return send(res,403,{error:'请在 DSH 插件中管理角色'}),true;
+      if(!dshOrigin||req.headers.origin!==dshOrigin)return send(res,403,{error:'请在 DSH 插件中管理角色'}),true;
       if(member.kind!=='human')return send(res,403,{error:'仅用户可通过页面管理角色'}),true;
       const b=await json(req),name=text(b.name,'角色名称',60),model=text(b.model,'模型',200);
       if(b.provider!=='dsh')throw Error('Codex 角色请在 Codex 插件中管理');
@@ -153,7 +153,7 @@ export function roles(db, event, selectMessage) {
     }
     const managed=p.match(/^\/api\/managed-roles\/([^/]+)$/);
     if(managed&&(req.method==='PATCH'||req.method==='DELETE')){
-      if(req.headers.origin!=='http://10.0.8.54:3080')return send(res,403,{error:'请在 DSH 插件中管理角色'}),true;
+      if(!dshOrigin||req.headers.origin!==dshOrigin)return send(res,403,{error:'请在 DSH 插件中管理角色'}),true;
       if(member.kind!=='human')return send(res,403,{error:'仅用户可通过页面管理角色'}),true;
       const id=decodeURIComponent(managed[1]),role=active.get(id);if(!role)return send(res,404,{error:'角色不存在'}),true;
       if(role.provider!=='dsh')return send(res,403,{error:'Codex 角色请在 Codex 插件中管理'}),true;

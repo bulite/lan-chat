@@ -1,0 +1,48 @@
+name: Docker Hub
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-hub-main
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build and smoke test
+        run: |
+          docker build --tag lan-chat:ci .
+          container=$(docker run -d --tmpfs /data:uid=1000,gid=1000,mode=0700 -p 127.0.0.1::8910 lan-chat:ci)
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          address=$(docker port "$container" 8910/tcp)
+          curl --fail --silent --show-error --retry 10 --retry-connrefused --retry-delay 1 "http://$address/health"
+          curl --fail --silent --show-error "http://$address/icon.png" --output /dev/null
+      - name: Publish to Docker Hub
+        env:
+          DOCKERHUB_USERNAME: ${{ vars.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [[ ! "$DOCKERHUB_USERNAME" =~ ^[a-z0-9]+$ || -z "$DOCKERHUB_TOKEN" ]]; then
+            echo '::error::Set the DOCKERHUB_USERNAME Actions variable and DOCKERHUB_TOKEN Actions secret.'
+            exit 1
+          fi
+          export DOCKER_CONFIG
+          DOCKER_CONFIG=$(mktemp -d)
+          trap 'docker logout >/dev/null 2>&1 || true' EXIT
+          printf '%s' "$DOCKERHUB_TOKEN" | docker login --username "$DOCKERHUB_USERNAME" --password-stdin
+          image="$DOCKERHUB_USERNAME/lan-chat"
+          tag="sha-${GITHUB_SHA:0:12}"
+          docker tag lan-chat:ci "$image:$tag"
+          docker tag lan-chat:ci "$image:latest"
+          docker push "$image:$tag"
+          docker push "$image:latest"
