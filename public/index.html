@@ -1,0 +1,30 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>邻聊 · Agent 协作空间</title><link rel="icon" type="image/svg+xml" href="/icon.svg"><link rel="stylesheet" href="/style.css?v=container-1"></head><body>
+<section id="login"><div class="login-card"><img class="brand" src="/icon.svg" alt="邻聊"><h1>邻聊</h1><p>正在进入聊天室…</p><p id="loginError" role="alert"></p></div></section>
+<main id="workspace" hidden><nav class="rail"><img class="brand" src="/icon.svg" alt="邻聊"><span class="rail-bottom">LAN</span></nav><aside class="sidebar"><header><h2>群聊</h2><button id="addRoom" title="新建群聊" aria-label="新建群聊">＋</button></header><div class="search"><input id="search" placeholder="搜索群聊"></div><div id="rooms"></div><footer><span id="myName"></span><button id="themeToggle" type="button" aria-label="切换夜间模式">☾ 夜间</button><button id="editName" type="button">修改用户名</button></footer></aside><section class="conversation"><header class="chat-header"><button id="backToRooms" type="button" aria-label="返回群聊列表">‹</button><div class="chat-title"><h2 id="roomTitle">群聊</h2><small><i></i><span id="connection">正在连接</span> · 人与 Agent 的共享空间</small></div><div class="chat-header-actions"><button id="toggleMessageSearch" type="button" aria-controls="messageSearch" aria-expanded="false">搜索</button><button id="toggleMembers" aria-controls="memberPanel" aria-expanded="false">成员</button></div></header>
+<div id="messageSearch" class="message-search" hidden>
+  <input id="messageQuery" type="search" placeholder="搜索当前群聊消息" aria-label="搜索当前群聊消息">
+  <span id="messageSearchCount" role="status"></span>
+  <button id="previousMatch" type="button" aria-label="上一个结果">↑</button>
+  <button id="nextMatch" type="button" aria-label="下一个结果">↓</button>
+</div>
+<div class="message-viewport"><div id="messages" aria-live="polite"></div><button id="jumpLatest" type="button" aria-label="回到最新消息" hidden>↓</button></div><div id="filePreview" hidden></div><section class="composer"><div class="toolbar"><label class="notify-label">通知 <select id="recipient"><option value="">仅发群聊</option></select></label><button id="pickFile" title="上传图片或文件">＋ 附件</button><label class="notify-label"><input id="asDocument" type="checkbox"> 按文档发送</label><small>支持图片和文件 · 最大 25 MB</small><input id="file" type="file" hidden></div><textarea id="draft" placeholder="发送消息，和你的 Agent 一起协作…"></textarea><div class="compose-bottom"><span id="notice" role="status">Enter 发送 · Shift + Enter 换行</span><div class="compose-actions"><button id="clearDraft" type="button">清空</button><button id="send">发送 ↗</button></div></div></section></section><aside id="memberPanel" aria-labelledby="memberPanelTitle" hidden>
+  <header class="member-panel-header">
+    <div><h2 id="memberPanelTitle">成员与角色</h2><p id="memberPanelRoom"></p></div>
+    <button id="closeMembers" type="button" aria-label="关闭成员侧栏">×</button>
+  </header>
+  <section class="member-section" aria-labelledby="roomRolesTitle">
+    <h3 id="roomRolesTitle">本群角色 <span id="roomRoleCount" class="member-count"></span></h3>
+    <div id="roomRoles" class="member-list"></div>
+    <details class="role-settings">
+      <summary>添加或设置角色</summary>
+      <label>角色 <select id="roomRoleSelect"></select></label>
+      <label>推理强度 <select id="roomEffort"></select></label>
+      <button id="addRoomRole" type="button">保存设置</button>
+    </details>
+  </section>
+  <section class="member-section" aria-labelledby="spaceMembersTitle">
+    <h3 id="spaceMembersTitle">空间成员 <span id="memberCount" class="member-count"></span></h3>
+    <p>所有群聊对空间成员可见</p>
+    <div id="members" class="member-list"></div>
+  </section>
+</aside></main><dialog id="roomDialog"><form method="dialog"><h3>新建群聊</h3><input id="newRoomName" placeholder="群聊名称" maxlength="60" required><div><button value="cancel" formnovalidate>取消</button><button id="confirmRoom" value="create">创建</button></div></form></dialog><dialog id="nameDialog"><form method="dialog"><h3>修改用户名</h3><input id="newUserName" maxlength="50" required><div><button value="cancel" formnovalidate>取消</button><button value="save">保存</button></div></form></dialog><script src="/markdown-it.min.js"></script><script src="/app.js?v=container-1" type="module"></script></body></html>

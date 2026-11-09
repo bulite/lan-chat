@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>邻聊角色管理</title><link rel="stylesheet" href="/style.css"></head>
+<body class="roles-page"><main class="roles-panel"><h1>角色管理</h1><p>每个角色绑定一个模型。选择所属插件后创建或修改角色。</p>
+<label>所属插件<select id="provider"><option value="codex">Codex</option><option value="dsh">DSH</option></select></label>
+<label>角色名称<input id="roleName" maxlength="60" autocomplete="off" placeholder="例如：代码助手"></label>
+<label>绑定模型<select id="roleModel"><option value="">请选择模型</option></select></label>
+<div class="roles-actions"><button id="saveRole">创建角色</button><button id="cancelEdit" hidden>取消修改</button><button id="refreshRoles">刷新模型和角色</button></div>
+<p id="roleNotice" role="status"></p><div id="roleList"></div></main><script type="module" src="/roles-manager.js"></script></body></html>

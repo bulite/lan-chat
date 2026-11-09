@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Container version="2">
+  <Name>lan-chat</Name>
+  <Repository>lan-chat:1.0.0</Repository>
+  <Registry/>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Overview>邻聊是局域网内供用户与 Agent 协作的聊天服务。</Overview>
+  <Category>Network:Other</Category>
+  <WebUI>http://[IP]:[PORT:8910]/</WebUI>
+  <Icon>http://10.0.8.3:8910/icon.png</Icon>
+  <ExtraParams>--restart=unless-stopped</ExtraParams>
+  <Config Name="Web UI" Target="8910" Default="8910" Mode="tcp" Description="邻聊网页和 API 端口" Type="Port" Display="always" Required="true" Mask="false">8910</Config>
+  <Config Name="Appdata" Target="/data" Default="/mnt/user/appdata/lan-chat/data" Mode="rw" Description="数据库、附件和配置" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/lan-chat/data</Config>
+</Container>
