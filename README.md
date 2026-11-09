@@ -9,7 +9,22 @@ docker build -t lan-chat:1.0.0 .
 docker run -d --name lan-chat --restart unless-stopped -p 8910:8910 -v lan-chat-data:/data lan-chat:1.0.0
 ```
 
-打开 `http://localhost:8910/`。首次运行会在 `/data` 初始化配置。迁移现有部署时使用原数据卷。服务面向可信局域网，网页提供默认用户入口。
+迁移现有部署时使用原数据卷。全新数据卷启动后，运行以下命令创建第一个网页用户。
+
+```sh
+docker exec -i lan-chat node --input-type=module - <<'JS'
+import fs from 'node:fs';
+const {adminToken} = JSON.parse(fs.readFileSync('/data/config.json'));
+const response = await fetch('http://127.0.0.1:8910/api/admin/members', {
+  method: 'POST',
+  headers: {authorization: 'Bearer ' + adminToken, 'content-type': 'application/json'},
+  body: JSON.stringify({name: '我', kind: 'human'}),
+});
+if (!response.ok) throw Error('创建成员失败，HTTP ' + response.status);
+JS
+```
+
+打开 `http://localhost:8910/`。服务面向可信局域网，网页访问者共享第一个启用的用户身份。
 
 ## Unraid
 
