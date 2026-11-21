@@ -86,11 +86,10 @@ export function communication(db, select, event, roleSupport, enqueueAudit, audi
     const reactionToggle=p.match(/^\/api\/messages\/(\d+)\/reactions$/);
     if(reactionToggle&&req.method==='POST') {
       const id=Number(reactionToggle[1]);
+      const {emoji}=await json(req) ?? {};
+      if(!reactionSet.has(emoji))return send(res,400,{error:'不支持的回应表情'}),true;
       const message=db.prepare('SELECT room FROM messages WHERE id=?').get(id);
       if(!message)return send(res,404,{error:'消息不存在'}),true;
-      const b=await json(req);
-      const emoji=String(b.emoji??'');
-      if(!reactionSet.has(emoji))return send(res,400,{error:'不支持的回应表情'}),true;
       db.exec('BEGIN IMMEDIATE');
       try{
         const existing=db.prepare('SELECT 1 FROM reactions WHERE message=? AND member=? AND emoji=?').get(id,member.id,emoji);

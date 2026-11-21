@@ -1,4 +1,4 @@
-import {createRoleUI,providerLabel,renderRoleJob} from './roles-ui.js?v=workspace-28';
+import {createRoleUI,providerLabel,renderRoleJob} from './roles-ui.js?v=workspace-29';
 const $=id=>document.getElementById(id);let me,room=null,rooms=[],pending=null,pendingSticker=null,controller,seen=new Set();
 const compactComposer=matchMedia('(max-width:600px)');
 const themeMode = $('themeMode');
@@ -460,6 +460,8 @@ function reactionChip(group, message) {
   const mine = group.members.includes(me.id);
   const chip = el('button', 'reaction-chip' + (mine ? ' mine' : ''));
   chip.type = 'button';
+  chip.dataset.emoji = group.emoji;
+  chip.setAttribute('aria-pressed', String(mine));
   chip.setAttribute('aria-label', (mine ? '取消回应 ' : '回应 ') + group.emoji + '，已有 ' + group.count + ' 人');
   chip.append(el('span', 'reaction-emoji', group.emoji), el('span', 'reaction-count', String(group.count)));
   chip.onclick = () => toggleReaction(message, group.emoji);
@@ -469,15 +471,28 @@ function reactionChip(group, message) {
 function renderReactions(row, message) {
   let holder = row.querySelector('.reactions-row');
   const groups = message.reactions || [];
+  const focusedEmoji = holder?.contains(document.activeElement) ? document.activeElement.dataset.emoji : null;
   if (!groups.length) {
     holder?.remove();
+    if (focusedEmoji) row.querySelector('.bubble')?.focus({preventScroll:true});
     return;
   }
   if (!holder) {
     holder = el('div', 'reactions-row');
     row.querySelector('.message-content').append(holder);
   }
-  holder.replaceChildren(...groups.map(group => reactionChip(group, message)));
+  const chips = groups.map(group => reactionChip(group, message));
+  holder.replaceChildren(...chips);
+  if (focusedEmoji) (chips.find(chip => chip.dataset.emoji === focusedEmoji) || chips[0]).focus({preventScroll:true});
+}
+
+let reactionHistoryLoad = null;
+const reactionRequests = new Map();
+function receiveReactions(messageId, reactions) {
+  reactionHistoryLoad?.set(messageId, reactions);
+  const request = reactionRequests.get(messageId);
+  if (request) request.receivedEvent = true;
+  refreshReactions(messageId, reactions);
 }
 
 function refreshReactions(messageId, reactions) {
@@ -489,11 +504,16 @@ function refreshReactions(messageId, reactions) {
 }
 
 async function toggleReaction(message, emoji) {
+  if (reactionRequests.has(message.id)) return;
+  const request = {receivedEvent:false};
+  reactionRequests.set(message.id, request);
   try {
     const result = await post('/api/messages/' + message.id + '/reactions', {emoji});
-    refreshReactions(message.id, result.reactions);
+    if (!request.receivedEvent) refreshReactions(message.id, result.reactions);
   } catch (error) {
     $('notice').textContent = error.message;
+  } finally {
+    reactionRequests.delete(message.id);
   }
 }
 
@@ -552,6 +572,7 @@ function showMessageMenu(message, position) {
   }
   messageMenu.append(quickReactions);
   const actions = [
+    ['更多回应', '☺', () => openReactionPicker(message)],
     ['引用', '“', () => chooseReply(message)],
     ...(message.text ? [
       ['复制文字', '⧉', () => copyMessage(message.text)],
@@ -1050,6 +1071,8 @@ async function selectRoom(id) {
     renderActiveRoles();
   }
   const generation = ++selection;
+  const reactionsDuringLoad = new Map();
+  reactionHistoryLoad = reactionsDuringLoad;
   room = id;
   void loadActiveRoles(id).catch(()=>{});
   if (changed) resetAuditorRoom();
@@ -1069,11 +1092,16 @@ async function selectRoom(id) {
     seen = new Set();
     $('messages').replaceChildren(el('div', 'empty', id ? '还没有消息，打个招呼吧' : '请先创建群聊'));
     lastRenderedDay = null;
-    data.forEach(message => appendMessage(message, false));
+    data.forEach(message => {
+      if (reactionsDuringLoad.has(message.id)) message.reactions = reactionsDuringLoad.get(message.id);
+      appendMessage(message, false);
+    });
     renderTaskSummary();
     scrollLatest();
   } catch (error) {
     if (generation === selection) $('notice').textContent = error.message;
+  } finally {
+    if (reactionHistoryLoad === reactionsDuringLoad) reactionHistoryLoad = null;
   }
 }
 async function reloadRooms(){rooms=await get('/api/rooms');renderRooms();}
@@ -1083,7 +1111,7 @@ function renderEfforts(){const role=availableRoles.find(r=>r.id===$('roomRoleSel
 async function refreshRoomRoles(){if(!room){$('roomRoleCount').textContent='0';$('roomRoles').replaceChildren(el('p','member-empty','请选择群聊'));$('roomRoleSelect').replaceChildren();$('addRoomRole').disabled=true;return;}const target=room;const [all,joined,caps]=await Promise.all([get('/api/roles'),get('/api/rooms/'+encodeURIComponent(target)+'/roles'),get('/api/role-capabilities')]);if(room!==target)return;availableRoles=all;roomRoles=joined;capabilities=caps;const select=$('roomRoleSelect'),previous=select.value;select.replaceChildren();for(const r of all){const option=el('option','',r.name+' · '+providerLabel(r.provider)+' · '+r.id.slice(-6));option.value=r.id;select.append(option);}if(all.some(r=>r.id===previous))select.value=previous;renderEfforts();$('addRoomRole').disabled=!all.length;$('memberPanelRoom').textContent=$('roomTitle').textContent;$('roomRoleCount').textContent=joined.length;$('roomRoles').replaceChildren();if(!joined.length)$('roomRoles').append(el('p','member-empty','本群还没有角色'));for(const r of joined){const row=el('div','member'),label=el('div','member-label');label.append(el('span','',r.name),el('small','',providerLabel(r.provider)+' · '+(r.effort==='default'?'宿主默认':r.effort)));const remove=el('button','','移出');remove.type='button';remove.onclick=async()=>{try{await api('/api/rooms/'+encodeURIComponent(target)+'/roles/'+encodeURIComponent(r.id),{method:'DELETE'});await Promise.all([refreshRoomRoles(),roleUI.refresh()]);}catch(e){$('notice').textContent=e.message;}};remove.className='remove-room-role';const avatarId='role:'+r.id;row.append(memberAvatar(avatarId,r.name,true),label,avatarEditButton(avatarId,r.name),remove);$('roomRoles').append(row);}}
 $('roomRoleSelect').onchange=renderEfforts;
 $('addRoomRole').onclick=async()=>{if(!room||!$('roomRoleSelect').value)return;try{await post('/api/rooms/'+encodeURIComponent(room)+'/roles',{roleId:$('roomRoleSelect').value,effort:$('roomEffort').value});await Promise.all([refreshRoomRoles(),roleUI.refresh()]);}catch(e){$('notice').textContent=e.message;}};
-async function connect(){controller?.abort();controller=new AbortController();const signal=controller.signal;while(!signal.aborted){try{const r=await api('/api/events',{signal});$('connection').textContent='实时连接';$('connection').dataset.state='connected';const reader=r.body.getReader(),decoder=new TextDecoder();let buffer='';while(true){const {value,done}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let idx;while((idx=buffer.indexOf('\n\n'))>=0){const part=buffer.slice(0,idx);buffer=buffer.slice(idx+2);if(!part.startsWith('data: '))continue;const e=JSON.parse(part.slice(6));if(e.type==='role-avatar')setRoleAvatar(e.roleId,e.avatar);if(e.type==='rooms'){await reloadRooms();if(room&&!rooms.some(entry=>entry.id===room))await selectRoom(rooms[0]?.id||null);}if(e.type==='members'){me=await get('/api/me');$('myName').textContent=me.name;await refreshMembers();if(room)await selectRoom(room);}if(e.type==='roles'||e.type==='room-roles'&&e.room===room){await roleUI.refresh();if(!$('memberPanel').hidden)await refreshRoomRoles();}if(e.type==='role-sources'&&!$('memberPanel').hidden)await refreshRoomRoles();if(e.type==='role-job'){recordActiveRole(e.job);const row=$('messages').querySelector('[data-message-id="'+Number(e.job.sourceMessage??e.job.message)+'"]');if(row){let node=row.querySelector('[data-role-job-id="'+Number(e.job.message)+'"]');if(!node){node=el('div','role-status');node.dataset.roleJobId=e.job.message;row.querySelector('.message-content').append(node);row.dataset.roleJobCount=String(Number(row.dataset.roleJobCount||0)+1);}renderMessageJob(node,e.job);renderTaskSummary();}}if(e.type==='audit-status'&&e.room===room){const row=$('messages').querySelector('[data-message-id="'+Number(e.messageId)+'"]');if(row)renderAuditStatus(row,e.messageId,e.routeStatus);}if(e.type==='reactions'&&e.room===room){refreshReactions(e.message,e.reactions);}if(e.type==='receipt'){const node=$('messages').querySelector('[data-message-id="'+Number(e.messageId)+'"] .receipts');if(node)renderReceipts(node,e.receipts);}if(e.type==='message'&&e.message.room===room){const follow=isNearLatest();appendMessage(e.message);if(follow)scrollLatest();else updateJumpLatest();if(!$('messageSearch').hidden&&$('messageQuery').value.trim())updateMessageSearch();}}}}catch(e){if(signal.aborted)return;}if(signal.aborted)return;$('connection').textContent='正在重连';delete $('connection').dataset.state;await new Promise(r=>setTimeout(r,2500));if(!signal.aborted){await roleUI.refresh().catch(()=>{});await loadRoleAvatars().catch(()=>{});await selectRoom(room);}}}
+async function connect(){controller?.abort();controller=new AbortController();const signal=controller.signal;while(!signal.aborted){try{const r=await api('/api/events',{signal});$('connection').textContent='实时连接';$('connection').dataset.state='connected';const reader=r.body.getReader(),decoder=new TextDecoder();let buffer='';while(true){const {value,done}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let idx;while((idx=buffer.indexOf('\n\n'))>=0){const part=buffer.slice(0,idx);buffer=buffer.slice(idx+2);if(!part.startsWith('data: '))continue;const e=JSON.parse(part.slice(6));if(e.type==='role-avatar')setRoleAvatar(e.roleId,e.avatar);if(e.type==='rooms'){await reloadRooms();if(room&&!rooms.some(entry=>entry.id===room))await selectRoom(rooms[0]?.id||null);}if(e.type==='members'){me=await get('/api/me');$('myName').textContent=me.name;await refreshMembers();if(room)await selectRoom(room);}if(e.type==='roles'||e.type==='room-roles'&&e.room===room){await roleUI.refresh();if(!$('memberPanel').hidden)await refreshRoomRoles();}if(e.type==='role-sources'&&!$('memberPanel').hidden)await refreshRoomRoles();if(e.type==='role-job'){recordActiveRole(e.job);const row=$('messages').querySelector('[data-message-id="'+Number(e.job.sourceMessage??e.job.message)+'"]');if(row){let node=row.querySelector('[data-role-job-id="'+Number(e.job.message)+'"]');if(!node){node=el('div','role-status');node.dataset.roleJobId=e.job.message;row.querySelector('.message-content').append(node);row.dataset.roleJobCount=String(Number(row.dataset.roleJobCount||0)+1);}renderMessageJob(node,e.job);renderTaskSummary();}}if(e.type==='audit-status'&&e.room===room){const row=$('messages').querySelector('[data-message-id="'+Number(e.messageId)+'"]');if(row)renderAuditStatus(row,e.messageId,e.routeStatus);}if(e.type==='reactions'&&e.room===room){receiveReactions(e.message,e.reactions);}if(e.type==='receipt'){const node=$('messages').querySelector('[data-message-id="'+Number(e.messageId)+'"] .receipts');if(node)renderReceipts(node,e.receipts);}if(e.type==='message'&&e.message.room===room){const follow=isNearLatest();appendMessage(e.message);if(follow)scrollLatest();else updateJumpLatest();if(!$('messageSearch').hidden&&$('messageQuery').value.trim())updateMessageSearch();}}}}catch(e){if(signal.aborted)return;}if(signal.aborted)return;$('connection').textContent='正在重连';delete $('connection').dataset.state;await new Promise(r=>setTimeout(r,2500));if(!signal.aborted){await roleUI.refresh().catch(()=>{});await loadRoleAvatars().catch(()=>{});await selectRoom(room);}}}
 async function login(){try{me=await get('/api/me');$('login').hidden=true;$('workspace').hidden=false;$('myName').textContent=me.name;await reloadRooms();await loadRoleAvatars();await selectRoom(rooms[0]?.id||null);$('manageAuditors').hidden=me.kind!=='human';await refreshMembers();connect();}catch(e){$('loginError').textContent=e.message;}}
 $('editName').onclick=()=>{$('newUserName').value=me.name;$('nameDialog').showModal();};$('nameDialog').onclose=async()=>{if($('nameDialog').returnValue!=='save')return;try{me=await(await api('/api/me',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('newUserName').value})})).json();$('myName').textContent=me.name;}catch(e){$('notice').textContent=e.message;}};
 const messageList = $('messages');
