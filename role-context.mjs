@@ -1,8 +1,9 @@
+import {assetMaxBytes} from './assets.mjs';
 // Role-scoped chat operations. The plugin's authenticated identity must own
 // a currently running job for the supplied session; all operations stay in
 // that job's room and never alter the separately bound inbox session.
 import fs from 'node:fs';import path from 'node:path';
-export function roleContext(db,event,comm,roleSupport,select,dataDir){
+export function roleContext(db,event,comm,roleSupport,select,dataDir,assets){
   const summarize=m=>({id:m.id,sender:m.roleReply?.roleName||m.roleSender?.roleName||m.sender,roleId:m.roleReply?.roleId||m.roleSender?.roleId||null,kind:m.kind,replyTo:m.replyTo,created:m.created,text:m.asDocument||m.text.length>300?`[文档 ${m.text.length} 字；使用消息读取工具查看 #${m.id}]`:m.text,...(m.fileId?{attachment:{id:m.fileId,name:m.fileName,description:/\.(png|jpe?g|gif|webp|bmp)$/i.test(m.fileName)?'图片':'附件'}}:{})});
   function scope(sessionId,member){
     if(member.kind!=='agent'||typeof sessionId!=='string')throw Error('角色会话无效');
@@ -13,13 +14,32 @@ export function roleContext(db,event,comm,roleSupport,select,dataDir){
   }
   async function route(req,res,url,member,{send,json}){
     if(url.pathname!=='/api/role-session' || req.method!=='POST')return false;
-    const b=await json(req,1024*1024);let s=scope(b.sessionId,member);
-    const replySource=b.action==='send'?b.replyTo:['skip','sent'].includes(b.action)?b.messageId:null;
+    const b=await json(req,Math.ceil(assetMaxBytes/3)*4+4096);let s=scope(b.sessionId,member);
+    const replySource=b.action==='send'?(b.sourceMessageId??b.replyTo):['skip','sent'].includes(b.action)?b.messageId:null;
     if(replySource!=null){
       if(!Number.isSafeInteger(replySource))throw Error('消息标识无效');
       const child=db.prepare("SELECT * FROM role_jobs WHERE owner=? AND session_id=? AND steer_parent=? AND status IN ('starting','running') AND COALESCE((SELECT original_message FROM role_job_origins WHERE job_id=role_jobs.message),message)=? LIMIT 1").get(member.id,b.sessionId,s.job.message,replySource);
       if(child){const message=comm.decorate(db.prepare(select+' WHERE m.id=?').get(replySource));s={...s,job:child,source:replySource,message};}
-      else if(['skip','sent'].includes(b.action)&&replySource!==s.source)throw Error('该消息不属于当前回合的角色任务');
+      else if((['skip','sent'].includes(b.action)||b.sourceMessageId!=null)&&replySource!==s.source)throw Error('该消息不属于当前回合的角色任务');
+    }
+    if(b.action==='asset-list'){
+      send(res,200,assets.list(b.kind));return true;
+    }
+    if(b.action==='asset-upload'){
+      if(typeof b.base64!=='string'||b.base64.length>Math.ceil(assetMaxBytes/3)*4||
+        b.base64.length%4!==0||!/^[A-Za-z0-9+/]+={0,2}$/.test(b.base64))throw Error('图片编码无效');
+      send(res,201,assets.publish(b.kind,b.name,Buffer.from(b.base64,'base64'),member));return true;
+    }
+    if(b.action==='set-avatar'){
+      const options=['🐱','🦊','🐼','🐸','🦉','🤖','👾','🚀','🐶','🐰','🐻','🐯','🐧','🐙','🐢','🦄','🌙','⚡'];
+      if(typeof b.avatar==='string'&&b.avatar.startsWith('asset:'))assets.requireKind(b.avatar.slice(6),'avatar');
+      else if(b.avatar!==null&&!options.includes(b.avatar))throw Error('请选择可用头像：'+options.join(' '));
+      const result=db.prepare('UPDATE roles SET avatar=? WHERE id=? AND owner=? AND deleted=0')
+        .run(b.avatar,s.job.role_id,member.id);
+      if(!result.changes)throw Error('角色不存在或已删除');
+      const value={roleId:s.job.role_id,avatar:b.avatar};
+      event({type:'role-avatar',...value});
+      send(res,200,value);return true;
     }
     if(b.action==='context'){
       const room=db.prepare('SELECT id,name FROM rooms WHERE id=?').get(s.room);
@@ -60,14 +80,18 @@ export function roleContext(db,event,comm,roleSupport,select,dataDir){
     }
     if(b.action==='send'){
       if(db.prepare('SELECT 1 FROM role_decisions WHERE source_job=?').get(s.job.message))throw Error('此任务已标记无需回复');
-      if(typeof b.text!=='string'||!b.text.trim()||b.text.length>100000)throw Error('消息内容无效');
+      const fileId=b.assetId==null?null:assets.requireKind(b.assetId,'sticker');
+      const text=b.text??'';
+      if(typeof text!=='string'||(!text.trim()&&!fileId)||text.length>100000)throw Error('消息内容无效');
       if(typeof b.clientMessageId!=='string'||!b.clientMessageId||b.clientMessageId.length>80)throw Error('需要不超过 80 字符的稳定消息标识');
       let target=null;
       if(b.targetRoleId!=null){
         target=db.prepare('SELECT r.id,r.owner,r.provider,r.name,r.model,rr.effort FROM room_roles rr JOIN roles r ON r.id=rr.role_id WHERE rr.room=? AND r.id=? AND r.deleted=0').get(s.room,b.targetRoleId);if(!target||target.id===s.job.role_id)throw Error('目标必须是当前群内的其他角色');target.autoRouted=true;
       }
       let targetJob=null;
-      const result=comm.create({room:s.room,text:b.text,replyTo:b.replyTo??s.source,asDocument:b.asDocument===true,clientMessageId:'role-'+s.job.message+'-'+b.clientMessageId},member,b.text.trim(),id=>{
+      const clientMessageId='role-'+s.job.message+'-'+b.clientMessageId;
+      const replyTo=b.replyTo??comm.priorRoleQuote(member.id,clientMessageId);
+      const result=comm.create({room:s.room,text,fileId,replyTo,asDocument:b.asDocument===true,clientMessageId},member,text.trim(),id=>{
         db.prepare('INSERT INTO role_messages(message,role_id,role_name,provider,source_job,target_role_id) VALUES(?,?,?,?,?,?)').run(id,s.job.role_id,s.job.role_name,s.job.provider,s.job.message,target?.id??null);
         if(target)targetJob=roleSupport.insertAdditionalJob(id,target);
       });

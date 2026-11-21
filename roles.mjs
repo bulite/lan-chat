@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 
 // Role jobs are separate from directed inbox deliveries: claiming a job must
 // never change the meaning of an existing inbox receipt.
-export function roles(db, event, selectMessage, dshOrigin) {
+export function roles(db, event, selectMessage, dshOrigin, publishAuditStatus) {
   db.exec(`CREATE TABLE IF NOT EXISTS roles (
     id TEXT PRIMARY KEY, owner TEXT NOT NULL, provider TEXT NOT NULL,
     name TEXT NOT NULL, model TEXT NOT NULL, deleted INTEGER NOT NULL DEFAULT 0
@@ -34,9 +34,12 @@ export function roles(db, event, selectMessage, dshOrigin) {
   if(!db.prepare('PRAGMA table_info(role_jobs)').all().some(c=>c.name==='auto_routed'))db.exec('ALTER TABLE role_jobs ADD COLUMN auto_routed INTEGER NOT NULL DEFAULT 0');
   if(!db.prepare('PRAGMA table_info(role_jobs)').all().some(c=>c.name==='steer_parent'))db.exec('ALTER TABLE role_jobs ADD COLUMN steer_parent INTEGER');
   if(!db.prepare('PRAGMA table_info(role_messages)').all().some(c=>c.name==='target_role_id'))db.exec('ALTER TABLE role_messages ADD COLUMN target_role_id TEXT');
+  if(!db.prepare('PRAGMA table_info(roles)').all().some(column=>column.name==='avatar'))
+    db.exec('ALTER TABLE roles ADD COLUMN avatar TEXT');
   const active=db.prepare('SELECT id,owner,provider,name,model FROM roles WHERE id=? AND deleted=0');
   const job=db.prepare(`SELECT message,COALESCE((SELECT original_message FROM role_job_origins WHERE job_id=role_jobs.message),message) AS sourceMessage,role_id AS roleId,provider,role_name AS roleName,
     model,status,session_id AS sessionId,error,reply_message AS replyMessage,continuation_of AS continuationOf,steer_parent AS steerParent,effort,updated
+    ,(SELECT room FROM messages WHERE id=COALESCE((SELECT original_message FROM role_job_origins WHERE job_id=role_jobs.message),role_jobs.message)) AS room
     FROM role_jobs WHERE message=?`);
   const decorate=m=>{
     if(!m)return m;
@@ -105,6 +108,15 @@ export function roles(db, event, selectMessage, dshOrigin) {
   const owned=(id,member)=>db.prepare('SELECT * FROM roles WHERE id=? AND owner=? AND deleted=0').get(id,member.id);
   async function route(req,res,url,member,{send,json,createReply}) {
     const p=url.pathname;
+    const activeMatch=p.match(/^\/api\/rooms\/([^/]+)\/active-roles$/);
+    if(activeMatch&&req.method==='GET'){
+      const room=decodeURIComponent(activeMatch[1]);
+      const running=db.prepare(`SELECT j.message FROM role_jobs j
+        LEFT JOIN role_job_origins o ON o.job_id=j.message
+        JOIN messages m ON m.id=COALESCE(o.original_message,j.message)
+        WHERE m.room=? AND j.status='running' ORDER BY j.updated,j.message`).all(room);
+      send(res,200,running.map(item=>job.get(item.message)));return true;
+    }
     const roomMatch=p.match(/^\/api\/rooms\/([^/]+)\/roles(?:\/([^/]+))?$/);
     if(roomMatch){
       const room=decodeURIComponent(roomMatch[1]),roleId=roomMatch[2]&&decodeURIComponent(roomMatch[2]);
@@ -131,7 +143,7 @@ export function roles(db, event, selectMessage, dshOrigin) {
     }
     if(p==='/api/role-sources'&&req.method==='POST'){
       if(member.kind!=='agent')return send(res,403,{error:'只有插件可以发布模型列表'}),true;
-      const b=await json(req);if(!['codex','dsh'].includes(b.provider)||!Array.isArray(b.models)||b.models.length>500)throw Error('模型列表无效');
+      const b=await json(req);if(!['codex','dsh','openclaw'].includes(b.provider)||!Array.isArray(b.models)||b.models.length>500)throw Error('模型列表无效');
       const seen=new Set(),models=b.models.map(m=>({id:text(m.id,'模型标识',200),name:text(m.name,'模型名称',200),efforts:Array.isArray(m.efforts)?m.efforts.map(e=>text(e,'思考等级',100)):[]}));
       if(models.some(m=>seen.has(m.id)||!seen.add(m.id)))throw Error('模型列表包含重复项');
       db.prepare('INSERT INTO role_sources(owner,provider,models,updated) VALUES(?,?,?,?) ON CONFLICT(owner,provider) DO UPDATE SET models=excluded.models,updated=excluded.updated').run(member.id,b.provider,JSON.stringify(models),new Date().toISOString());
@@ -167,12 +179,12 @@ export function roles(db, event, selectMessage, dshOrigin) {
       event({type:'roles'});send(res,200,{ok:true});return true;
     }
     if(p==='/api/roles'&&req.method==='GET') {
-      send(res,200,db.prepare('SELECT id,owner,provider,name,model FROM roles WHERE deleted=0 ORDER BY name,id').all());return true;
+      send(res,200,db.prepare('SELECT id,owner,provider,name,model,avatar FROM roles WHERE deleted=0 ORDER BY name,id').all());return true;
     }
     if(p==='/api/roles'&&req.method==='POST') {
       if(member.kind!=='agent')return send(res,403,{error:'只有插件身份可以管理角色'}),true;
       const b=await json(req),name=text(b.name,'角色名称',60),model=text(b.model,'模型',200);
-      if(!['codex','dsh'].includes(b.provider))throw Error('插件类型无效');
+      if(!['codex','dsh','openclaw'].includes(b.provider))throw Error('插件类型无效');
       const role={id:randomUUID(),owner:member.id,provider:b.provider,name,model};
       db.prepare('INSERT INTO roles(id,owner,provider,name,model) VALUES(?,?,?,?,?)').run(role.id,role.owner,role.provider,role.name,role.model);
       event({type:'roles'});send(res,201,role);return true;
@@ -273,10 +285,10 @@ export function roles(db, event, selectMessage, dshOrigin) {
         if(failRoom&&hard){
           db.prepare("INSERT INTO role_blacklist(role_id,owner,room,blocked_at,reason) VALUES(?,?,?,?,?) ON CONFLICT(role_id,room) DO UPDATE SET blocked_at=excluded.blocked_at,reason=excluded.reason").run(row.role_id,row.owner,failRoom,now,reason.slice(0,500));
           // 把原始消息重新放回审计队列，让其他角色接（已被拉黑的不在候选里）。
-          db.prepare("UPDATE audit_jobs SET status='pending',token=NULL,claimed_at=NULL,error=NULL WHERE message=? AND status='routed'").run(origin);
-          db.prepare(`INSERT OR IGNORE INTO audit_jobs(message,owner,provider,model)
-            SELECT ?,s.owner,s.provider,s.model FROM auditor_sources s WHERE EXISTS
-            (SELECT 1 FROM room_roles rr JOIN roles r ON r.id=rr.role_id WHERE rr.room=? AND r.owner=s.owner AND r.provider=s.provider AND r.deleted=0)`).run(origin,failRoom);
+          if(row.auto_routed){
+            const reopened=db.prepare("UPDATE audit_jobs SET status='pending',token=NULL,claimed_at=NULL,error=NULL,reason=NULL WHERE message=? AND owner=? AND provider=? AND status='routed'").run(origin,row.owner,row.provider);
+            if(reopened.changes)publishAuditStatus(origin,failRoom);
+          }
         }
       }
       const value=job.get(id);event({type:'role-job',job:value});send(res,200,value);return true;

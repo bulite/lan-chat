@@ -35,6 +35,21 @@ jobs:
           const icon = await fetch(origin + '/icon.png');
           assert(icon.ok);
           assert.equal(icon.headers.get('content-type'), 'image/png');
+          const home = await fetch(origin + '/');
+          assert(home.ok);
+          assert.match(await home.text(), /rel="manifest"/);
+          const manifest = await fetch(origin + '/manifest.webmanifest');
+          assert(manifest.ok);
+          assert.match(manifest.headers.get('content-type'), /^application\/manifest\+json/);
+          const config = await manifest.json();
+          assert.equal(config.display, 'standalone');
+          for (const size of ['192x192', '512x512']) {
+            const entry = config.icons.find(icon => icon.sizes === size);
+            assert(entry);
+            const appIcon = await fetch(origin + entry.src);
+            assert(appIcon.ok);
+            assert.equal(appIcon.headers.get('content-type'), 'image/png');
+          }
           JS
       - name: Publish to Docker Hub
         env:

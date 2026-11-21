@@ -1,5 +1,5 @@
 const ranks = {pending:0, delivered:1, read:2, processed:3, dismissed:3};
-export function communication(db, select, event, roleSupport, enqueueAudit) {
+export function communication(db, select, event, roleSupport, enqueueAudit, auditStatus, decorateAsset=m=>m) {
   db.exec(`CREATE TABLE IF NOT EXISTS message_meta(message INTEGER PRIMARY KEY, kind TEXT NOT NULL, priority TEXT NOT NULL, reply_to INTEGER, client_id TEXT, sender TEXT NOT NULL, task_id TEXT, UNIQUE(sender,client_id));
     CREATE TABLE IF NOT EXISTS deliveries(message INTEGER NOT NULL,recipient TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',updated TEXT NOT NULL,PRIMARY KEY(message,recipient));
     CREATE INDEX IF NOT EXISTS deliveries_recipient ON deliveries(recipient,status,message);
@@ -11,7 +11,7 @@ export function communication(db, select, event, roleSupport, enqueueAudit) {
   }
   const meta=db.prepare('SELECT kind AS messageKind,priority,reply_to AS replyTo,task_id AS taskId,as_document AS asDocument,role_all AS roleAll,role_target AS roleTarget FROM message_meta WHERE message=?');
   const receipts=db.prepare('SELECT d.recipient,p.name,d.status,d.updated FROM deliveries d JOIN members p ON p.id=d.recipient WHERE message=?');
-  const decorate=m=>m&&roleSupport.decorate({...m,...(meta.get(m.id)||{messageKind:'message',priority:'normal'}),recipients:receipts.all(m.id)});
+  const decorate=m=>m&&decorateAsset(roleSupport.decorate({...m,...(meta.get(m.id)||{messageKind:'message',priority:'normal'}),recipients:receipts.all(m.id),routeStatus:auditStatus(m.id)}));
   function validate(b,member) {
     const recipients=b.recipients??[];
     if(!Array.isArray(recipients)||recipients.length>50||recipients.some(id=>typeof id!=='string'))throw Error('recipients 必须是成员 ID 数组（最多 50 个）');
@@ -25,6 +25,10 @@ export function communication(db, select, event, roleSupport, enqueueAudit) {
     if(b.asDocument!=null&&typeof b.asDocument!=='boolean')throw Error('消息展示方式无效');
     return {ids,kind,priority};
   }
+  const priorReply=db.prepare('SELECT reply_to FROM message_meta WHERE sender=? AND client_id=?');
+  function priorRoleQuote(sender,clientMessageId){
+    return priorReply.get(sender,clientMessageId)?.reply_to??null;
+  }
   function create(b,member,text,onInsert) {
     const v=validate(b,member);
     if(b.clientMessageId){const old=db.prepare(select+' JOIN message_meta mm ON mm.message=m.id WHERE mm.sender=? AND mm.client_id=?').get(member.id,b.clientMessageId);if(old){const result=decorate(old);if(old.text!==text||old.room!==(b.room||'general')||old.fileId!==(b.fileId||null)||result.messageKind!==v.kind||result.priority!==v.priority||result.replyTo!==(b.replyTo??null)||result.taskId!==(b.taskId??null)||Boolean(result.asDocument)!==Boolean(b.asDocument)||(result.roleTarget??null)!==(b.roleId??null)||JSON.stringify(result.recipients.map(r=>r.recipient).sort())!==JSON.stringify(v.ids.sort()))throw Error('clientMessageId 已用于不同消息');return {message:result,duplicate:true};}}
@@ -35,7 +39,7 @@ export function communication(db, select, event, roleSupport, enqueueAudit) {
       for(const recipient of v.ids)db.prepare('INSERT INTO deliveries(message,recipient,updated) VALUES(?,?,?)').run(id,recipient,now);
       roleSupport.insertJob(id,role);
       if(onInsert)onInsert(id);
-      enqueueAudit(id,b.room||'general',role,text,b.replyTo,b.fileId);
+      enqueueAudit(id,b.room||'general',role,text,b.replyTo,b.fileId,member.kind);
       db.exec('COMMIT');
     }catch(e){db.exec('ROLLBACK');throw e;}
     return {message:decorate(db.prepare(select+' WHERE m.id=?').get(id)),duplicate:false};
@@ -68,5 +72,5 @@ export function communication(db, select, event, roleSupport, enqueueAudit) {
     if(p==='/api/presence'&&req.method==='GET') {send(res,200,db.prepare('SELECT member,state,updated FROM presence').all().map(r=>({...r,state:Date.now()-Date.parse(r.updated)>90000?'offline':r.state})));return true;}
     return false;
   }
-  return {decorate,create,route};
+  return {decorate,create,route,priorRoleQuote};
 }
