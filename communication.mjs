@@ -3,6 +3,7 @@ export function communication(db, select, event, roleSupport, enqueueAudit, audi
   db.exec(`CREATE TABLE IF NOT EXISTS message_meta(message INTEGER PRIMARY KEY, kind TEXT NOT NULL, priority TEXT NOT NULL, reply_to INTEGER, client_id TEXT, sender TEXT NOT NULL, task_id TEXT, UNIQUE(sender,client_id));
     CREATE TABLE IF NOT EXISTS deliveries(message INTEGER NOT NULL,recipient TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',updated TEXT NOT NULL,PRIMARY KEY(message,recipient));
     CREATE INDEX IF NOT EXISTS deliveries_recipient ON deliveries(recipient,status,message);
+    CREATE TABLE IF NOT EXISTS reactions(message INTEGER NOT NULL,member TEXT NOT NULL,emoji TEXT NOT NULL,updated TEXT NOT NULL,PRIMARY KEY(message,member,emoji));
     CREATE TABLE IF NOT EXISTS presence(member TEXT PRIMARY KEY,state TEXT NOT NULL,session TEXT,updated TEXT NOT NULL);`);
   if(!db.prepare('PRAGMA table_info(message_meta)').all().some(c=>c.name==='as_document'))db.exec('ALTER TABLE message_meta ADD COLUMN as_document INTEGER NOT NULL DEFAULT 0');
   if(!db.prepare('PRAGMA table_info(message_meta)').all().some(c=>c.name==='role_all'))db.exec('ALTER TABLE message_meta ADD COLUMN role_all INTEGER NOT NULL DEFAULT 0');
@@ -11,7 +12,19 @@ export function communication(db, select, event, roleSupport, enqueueAudit, audi
   }
   const meta=db.prepare('SELECT kind AS messageKind,priority,reply_to AS replyTo,task_id AS taskId,as_document AS asDocument,role_all AS roleAll,role_target AS roleTarget FROM message_meta WHERE message=?');
   const receipts=db.prepare('SELECT d.recipient,p.name,d.status,d.updated FROM deliveries d JOIN members p ON p.id=d.recipient WHERE message=?');
-  const decorate=m=>m&&decorateAsset(roleSupport.decorate({...m,...(meta.get(m.id)||{messageKind:'message',priority:'normal'}),recipients:receipts.all(m.id),routeStatus:auditStatus(m.id)}));
+  const reactionSet=new Set(['👍','👎','❤️','😂','😮','😢','🎉','🚀','👀','🔥','✅','❌','🙏','💯','🤔','😅','🫡','💪','☕','⚡']);
+  const reactionRows=db.prepare('SELECT emoji,member FROM reactions WHERE message=? ORDER BY rowid');
+  function reactionsFor(id) {
+    const groups=new Map();
+    for(const row of reactionRows.all(id)) {
+      const group=groups.get(row.emoji)||{emoji:row.emoji,count:0,members:[]};
+      group.count+=1;
+      group.members.push(row.member);
+      groups.set(row.emoji,group);
+    }
+    return [...groups.values()];
+  }
+  const decorate=m=>m&&decorateAsset(roleSupport.decorate({...m,...(meta.get(m.id)||{messageKind:'message',priority:'normal'}),recipients:receipts.all(m.id),routeStatus:auditStatus(m.id),reactions:reactionsFor(m.id)}));
   function validate(b,member) {
     const recipients=b.recipients??[];
     if(!Array.isArray(recipients)||recipients.length>50||recipients.some(id=>typeof id!=='string'))throw Error('recipients 必须是成员 ID 数组（最多 50 个）');
@@ -70,6 +83,26 @@ export function communication(db, select, event, roleSupport, enqueueAudit, audi
       db.prepare('INSERT INTO presence VALUES(?,?,?,?) ON CONFLICT(member) DO UPDATE SET state=excluded.state,session=excluded.session,updated=excluded.updated').run(member.id,b.state,String(b.sessionId||'').slice(0,150),new Date().toISOString());send(res,200,{ok:true});return true;
     }
     if(p==='/api/presence'&&req.method==='GET') {send(res,200,db.prepare('SELECT member,state,updated FROM presence').all().map(r=>({...r,state:Date.now()-Date.parse(r.updated)>90000?'offline':r.state})));return true;}
+    const reactionToggle=p.match(/^\/api\/messages\/(\d+)\/reactions$/);
+    if(reactionToggle&&req.method==='POST') {
+      const id=Number(reactionToggle[1]);
+      const message=db.prepare('SELECT room FROM messages WHERE id=?').get(id);
+      if(!message)return send(res,404,{error:'消息不存在'}),true;
+      const b=await json(req);
+      const emoji=String(b.emoji??'');
+      if(!reactionSet.has(emoji))return send(res,400,{error:'不支持的回应表情'}),true;
+      db.exec('BEGIN IMMEDIATE');
+      try{
+        const existing=db.prepare('SELECT 1 FROM reactions WHERE message=? AND member=? AND emoji=?').get(id,member.id,emoji);
+        if(existing)db.prepare('DELETE FROM reactions WHERE message=? AND member=? AND emoji=?').run(id,member.id,emoji);
+        else db.prepare('INSERT INTO reactions(message,member,emoji,updated) VALUES(?,?,?,?)').run(id,member.id,emoji,new Date().toISOString());
+        db.exec('COMMIT');
+      }catch(e){db.exec('ROLLBACK');throw e;}
+      const reactions=reactionsFor(id);
+      event({type:'reactions',message:id,room:message.room,reactions});
+      send(res,200,{message:id,reactions});
+      return true;
+    }
     return false;
   }
   return {decorate,create,route,priorRoleQuote};

@@ -1,6 +1,6 @@
 # 邻聊 LAN Chat
 
-邻聊是面向局域网的用户和 Agent 协作聊天室，支持角色、Markdown 预览、附件和主题切换。
+邻聊是面向局域网的用户和 Agent 协作聊天室，支持角色、Markdown 预览、附件和主题切换。界面布局与配色参照 [Rocket.Chat](https://rocket.chat) 的 [fuselage 设计规范](https://github.com/RocketChat/Rocket.Chat/tree/develop/packages/fuselage-tokens)（MIT License）提取的 token 定制，消息内支持 Markdown、表情回应与悬停快捷操作。
 
 ## Docker
 

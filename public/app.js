@@ -1,4 +1,4 @@
-import {createRoleUI,providerLabel,renderRoleJob} from './roles-ui.js?v=workspace-15';
+import {createRoleUI,providerLabel,renderRoleJob} from './roles-ui.js?v=workspace-28';
 const $=id=>document.getElementById(id);let me,room=null,rooms=[],pending=null,pendingSticker=null,controller,seen=new Set();
 const compactComposer=matchMedia('(max-width:600px)');
 const themeMode = $('themeMode');
@@ -448,6 +448,77 @@ function messageName(message) {
   return message.roleReply?.roleName || message.roleSender?.roleName || message.sender;
 }
 
+const REACTION_EMOJIS = ['👍','👎','❤️','😂','😮','😢','🎉','🚀','👀','🔥','✅','❌','🙏','💯','🤔','😅','🫡','💪','☕','⚡'];
+const reactionPicker = el('dialog', 'reaction-picker');
+reactionPicker.setAttribute('aria-label', '选择回应表情');
+document.body.append(reactionPicker);
+reactionPicker.addEventListener('click', event => {
+  if (event.target === reactionPicker) reactionPicker.close();
+});
+
+function reactionChip(group, message) {
+  const mine = group.members.includes(me.id);
+  const chip = el('button', 'reaction-chip' + (mine ? ' mine' : ''));
+  chip.type = 'button';
+  chip.setAttribute('aria-label', (mine ? '取消回应 ' : '回应 ') + group.emoji + '，已有 ' + group.count + ' 人');
+  chip.append(el('span', 'reaction-emoji', group.emoji), el('span', 'reaction-count', String(group.count)));
+  chip.onclick = () => toggleReaction(message, group.emoji);
+  return chip;
+}
+
+function renderReactions(row, message) {
+  let holder = row.querySelector('.reactions-row');
+  const groups = message.reactions || [];
+  if (!groups.length) {
+    holder?.remove();
+    return;
+  }
+  if (!holder) {
+    holder = el('div', 'reactions-row');
+    row.querySelector('.message-content').append(holder);
+  }
+  holder.replaceChildren(...groups.map(group => reactionChip(group, message)));
+}
+
+function refreshReactions(messageId, reactions) {
+  const row = $('messages').querySelector('[data-message-id="' + Number(messageId) + '"]');
+  if (!row) return;
+  const remembered = quoteMessages.get(Number(messageId));
+  if (remembered) remembered.reactions = reactions;
+  renderReactions(row, {id:messageId, reactions});
+}
+
+async function toggleReaction(message, emoji) {
+  try {
+    const result = await post('/api/messages/' + message.id + '/reactions', {emoji});
+    refreshReactions(message.id, result.reactions);
+  } catch (error) {
+    $('notice').textContent = error.message;
+  }
+}
+
+function openReactionPicker(message, anchor) {
+  reactionPicker.replaceChildren(...REACTION_EMOJIS.map(emoji => {
+    const button = el('button', 'reaction-choice', emoji);
+    button.type = 'button';
+    button.setAttribute('aria-label', '回应 ' + emoji);
+    button.onclick = () => {
+      reactionPicker.close();
+      toggleReaction(message, emoji);
+    };
+    return button;
+  }));
+  reactionPicker.style.removeProperty('left');
+  reactionPicker.style.removeProperty('top');
+  if (!reactionPicker.open) reactionPicker.showModal();
+  if (!compactComposer.matches && anchor) {
+    const bounds = reactionPicker.getBoundingClientRect();
+    const rect = anchor.getBoundingClientRect();
+    reactionPicker.style.left = Math.max(8, Math.min(rect.left, innerWidth - bounds.width - 8)) + 'px';
+    reactionPicker.style.top = Math.max(8, Math.min(rect.bottom + 6, innerHeight - bounds.height - 8)) + 'px';
+  }
+}
+
 async function copyMessage(text) {
   if (navigator.clipboard && window.isSecureContext) {
     await navigator.clipboard.writeText(text);
@@ -468,6 +539,18 @@ function showMessageMenu(message, position) {
     el('p', '', message.text || message.assetName || message.fileName || '消息'));
   messageMenu.replaceChildren(heading);
   messageMenu.setAttribute('aria-label', '消息操作');
+  const quickReactions = el('div', 'message-menu-reactions');
+  for (const emoji of REACTION_EMOJIS.slice(0, 10)) {
+    const button = el('button', 'reaction-choice', emoji);
+    button.type = 'button';
+    button.setAttribute('aria-label', '回应 ' + emoji);
+    button.onclick = () => {
+      messageMenu.close();
+      toggleReaction(message, emoji);
+    };
+    quickReactions.append(button);
+  }
+  messageMenu.append(quickReactions);
   const actions = [
     ['引用', '“', () => chooseReply(message)],
     ...(message.text ? [
@@ -882,6 +965,7 @@ function appendMessage(message, updateTasks = true) {
   content.append(meta, bubble);
   appendQuote(content, message);
   row.append(messageAvatar(message, speaker), content);
+  renderReactions(row, message);
   renderAuditStatus(row, message.id, message.routeStatus);
   row.dataset.messageId = message.id;
   row.dataset.searchText = [message.text, message.fileName, speaker?.roleName, message.sender].filter(Boolean).join(' ').toLocaleLowerCase();
@@ -899,8 +983,54 @@ function appendMessage(message, updateTasks = true) {
     content.append(status);
   }
   groupMessage(row, message, speaker);
+  appendDayDivider(message);
+  addMessageTools(row, message);
   $('messages').append(row);
   if (updateTasks && jobs.length) renderTaskSummary();
+}
+
+let lastRenderedDay = null;
+function dayLabel(date) {
+  const now = new Date();
+  const today = now.toDateString() === date.toDateString();
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).toDateString() === date.toDateString();
+  if (today) return '今天';
+  if (yesterday) return '昨天';
+  return date.toLocaleDateString('zh-CN', {month: 'long', day: 'numeric', year: date.getFullYear() === now.getFullYear() ? undefined : 'numeric'});
+}
+function appendDayDivider(message) {
+  const date = new Date(message.created);
+  const key = date.toDateString();
+  if (lastRenderedDay !== key) {
+    lastRenderedDay = key;
+    $('messages').append(el('div', 'day', dayLabel(date)));
+  }
+}
+
+function addMessageTools(row, message) {
+  const tools = el('div', 'message-tools');
+  tools.setAttribute('role', 'toolbar');
+  tools.setAttribute('aria-label', '消息操作');
+  const react = el('button', '', '☺');
+  react.type = 'button';
+  react.title = '添加回应';
+  react.setAttribute('aria-label', '添加回应');
+  react.onclick = event => openReactionPicker(message, event.currentTarget);
+  const reply = el('button', '', '↩');
+  reply.type = 'button';
+  reply.title = '引用回复';
+  reply.setAttribute('aria-label', '引用回复');
+  reply.onclick = () => chooseReply(message);
+  const more = el('button', '', '⋯');
+  more.type = 'button';
+  more.title = '更多操作';
+  more.setAttribute('aria-label', '更多操作');
+  more.onclick = event => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    showMessageMenu(message, {x:rect.left, y:rect.bottom + 6});
+  };
+  tools.append(react, reply, more);
+  row.append(tools);
 }
 let selection = 0;
 async function selectRoom(id) {
@@ -938,6 +1068,7 @@ async function selectRoom(id) {
     clearBlobs();
     seen = new Set();
     $('messages').replaceChildren(el('div', 'empty', id ? '还没有消息，打个招呼吧' : '请先创建群聊'));
+    lastRenderedDay = null;
     data.forEach(message => appendMessage(message, false));
     renderTaskSummary();
     scrollLatest();
@@ -952,7 +1083,7 @@ function renderEfforts(){const role=availableRoles.find(r=>r.id===$('roomRoleSel
 async function refreshRoomRoles(){if(!room){$('roomRoleCount').textContent='0';$('roomRoles').replaceChildren(el('p','member-empty','请选择群聊'));$('roomRoleSelect').replaceChildren();$('addRoomRole').disabled=true;return;}const target=room;const [all,joined,caps]=await Promise.all([get('/api/roles'),get('/api/rooms/'+encodeURIComponent(target)+'/roles'),get('/api/role-capabilities')]);if(room!==target)return;availableRoles=all;roomRoles=joined;capabilities=caps;const select=$('roomRoleSelect'),previous=select.value;select.replaceChildren();for(const r of all){const option=el('option','',r.name+' · '+providerLabel(r.provider)+' · '+r.id.slice(-6));option.value=r.id;select.append(option);}if(all.some(r=>r.id===previous))select.value=previous;renderEfforts();$('addRoomRole').disabled=!all.length;$('memberPanelRoom').textContent=$('roomTitle').textContent;$('roomRoleCount').textContent=joined.length;$('roomRoles').replaceChildren();if(!joined.length)$('roomRoles').append(el('p','member-empty','本群还没有角色'));for(const r of joined){const row=el('div','member'),label=el('div','member-label');label.append(el('span','',r.name),el('small','',providerLabel(r.provider)+' · '+(r.effort==='default'?'宿主默认':r.effort)));const remove=el('button','','移出');remove.type='button';remove.onclick=async()=>{try{await api('/api/rooms/'+encodeURIComponent(target)+'/roles/'+encodeURIComponent(r.id),{method:'DELETE'});await Promise.all([refreshRoomRoles(),roleUI.refresh()]);}catch(e){$('notice').textContent=e.message;}};remove.className='remove-room-role';const avatarId='role:'+r.id;row.append(memberAvatar(avatarId,r.name,true),label,avatarEditButton(avatarId,r.name),remove);$('roomRoles').append(row);}}
 $('roomRoleSelect').onchange=renderEfforts;
 $('addRoomRole').onclick=async()=>{if(!room||!$('roomRoleSelect').value)return;try{await post('/api/rooms/'+encodeURIComponent(room)+'/roles',{roleId:$('roomRoleSelect').value,effort:$('roomEffort').value});await Promise.all([refreshRoomRoles(),roleUI.refresh()]);}catch(e){$('notice').textContent=e.message;}};
-async function connect(){controller?.abort();controller=new AbortController();const signal=controller.signal;while(!signal.aborted){try{const r=await api('/api/events',{signal});$('connection').textContent='实时连接';$('connection').dataset.state='connected';const reader=r.body.getReader(),decoder=new TextDecoder();let buffer='';while(true){const {value,done}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let idx;while((idx=buffer.indexOf('\n\n'))>=0){const part=buffer.slice(0,idx);buffer=buffer.slice(idx+2);if(!part.startsWith('data: '))continue;const e=JSON.parse(part.slice(6));if(e.type==='role-avatar')setRoleAvatar(e.roleId,e.avatar);if(e.type==='rooms'){await reloadRooms();if(room&&!rooms.some(entry=>entry.id===room))await selectRoom(rooms[0]?.id||null);}if(e.type==='members'){me=await get('/api/me');$('myName').textContent=me.name;await refreshMembers();if(room)await selectRoom(room);}if(e.type==='roles'||e.type==='room-roles'&&e.room===room){await roleUI.refresh();if(!$('memberPanel').hidden)await refreshRoomRoles();}if(e.type==='role-sources'&&!$('memberPanel').hidden)await refreshRoomRoles();if(e.type==='role-job'){recordActiveRole(e.job);const row=$('messages').querySelector('[data-message-id="'+Number(e.job.sourceMessage??e.job.message)+'"]');if(row){let node=row.querySelector('[data-role-job-id="'+Number(e.job.message)+'"]');if(!node){node=el('div','role-status');node.dataset.roleJobId=e.job.message;row.querySelector('.message-content').append(node);row.dataset.roleJobCount=String(Number(row.dataset.roleJobCount||0)+1);}renderMessageJob(node,e.job);renderTaskSummary();}}if(e.type==='audit-status'&&e.room===room){const row=$('messages').querySelector('[data-message-id="'+Number(e.messageId)+'"]');if(row)renderAuditStatus(row,e.messageId,e.routeStatus);}if(e.type==='receipt'){const node=$('messages').querySelector('[data-message-id="'+Number(e.messageId)+'"] .receipts');if(node)renderReceipts(node,e.receipts);}if(e.type==='message'&&e.message.room===room){const follow=isNearLatest();appendMessage(e.message);if(follow)scrollLatest();else updateJumpLatest();if(!$('messageSearch').hidden&&$('messageQuery').value.trim())updateMessageSearch();}}}}catch(e){if(signal.aborted)return;}if(signal.aborted)return;$('connection').textContent='正在重连';delete $('connection').dataset.state;await new Promise(r=>setTimeout(r,2500));if(!signal.aborted){await roleUI.refresh().catch(()=>{});await loadRoleAvatars().catch(()=>{});await selectRoom(room);}}}
+async function connect(){controller?.abort();controller=new AbortController();const signal=controller.signal;while(!signal.aborted){try{const r=await api('/api/events',{signal});$('connection').textContent='实时连接';$('connection').dataset.state='connected';const reader=r.body.getReader(),decoder=new TextDecoder();let buffer='';while(true){const {value,done}=await reader.read();if(done)break;buffer+=decoder.decode(value,{stream:true});let idx;while((idx=buffer.indexOf('\n\n'))>=0){const part=buffer.slice(0,idx);buffer=buffer.slice(idx+2);if(!part.startsWith('data: '))continue;const e=JSON.parse(part.slice(6));if(e.type==='role-avatar')setRoleAvatar(e.roleId,e.avatar);if(e.type==='rooms'){await reloadRooms();if(room&&!rooms.some(entry=>entry.id===room))await selectRoom(rooms[0]?.id||null);}if(e.type==='members'){me=await get('/api/me');$('myName').textContent=me.name;await refreshMembers();if(room)await selectRoom(room);}if(e.type==='roles'||e.type==='room-roles'&&e.room===room){await roleUI.refresh();if(!$('memberPanel').hidden)await refreshRoomRoles();}if(e.type==='role-sources'&&!$('memberPanel').hidden)await refreshRoomRoles();if(e.type==='role-job'){recordActiveRole(e.job);const row=$('messages').querySelector('[data-message-id="'+Number(e.job.sourceMessage??e.job.message)+'"]');if(row){let node=row.querySelector('[data-role-job-id="'+Number(e.job.message)+'"]');if(!node){node=el('div','role-status');node.dataset.roleJobId=e.job.message;row.querySelector('.message-content').append(node);row.dataset.roleJobCount=String(Number(row.dataset.roleJobCount||0)+1);}renderMessageJob(node,e.job);renderTaskSummary();}}if(e.type==='audit-status'&&e.room===room){const row=$('messages').querySelector('[data-message-id="'+Number(e.messageId)+'"]');if(row)renderAuditStatus(row,e.messageId,e.routeStatus);}if(e.type==='reactions'&&e.room===room){refreshReactions(e.message,e.reactions);}if(e.type==='receipt'){const node=$('messages').querySelector('[data-message-id="'+Number(e.messageId)+'"] .receipts');if(node)renderReceipts(node,e.receipts);}if(e.type==='message'&&e.message.room===room){const follow=isNearLatest();appendMessage(e.message);if(follow)scrollLatest();else updateJumpLatest();if(!$('messageSearch').hidden&&$('messageQuery').value.trim())updateMessageSearch();}}}}catch(e){if(signal.aborted)return;}if(signal.aborted)return;$('connection').textContent='正在重连';delete $('connection').dataset.state;await new Promise(r=>setTimeout(r,2500));if(!signal.aborted){await roleUI.refresh().catch(()=>{});await loadRoleAvatars().catch(()=>{});await selectRoom(room);}}}
 async function login(){try{me=await get('/api/me');$('login').hidden=true;$('workspace').hidden=false;$('myName').textContent=me.name;await reloadRooms();await loadRoleAvatars();await selectRoom(rooms[0]?.id||null);$('manageAuditors').hidden=me.kind!=='human';await refreshMembers();connect();}catch(e){$('loginError').textContent=e.message;}}
 $('editName').onclick=()=>{$('newUserName').value=me.name;$('nameDialog').showModal();};$('nameDialog').onclose=async()=>{if($('nameDialog').returnValue!=='save')return;try{me=await(await api('/api/me',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:$('newUserName').value})})).json();$('myName').textContent=me.name;}catch(e){$('notice').textContent=e.message;}};
 const messageList = $('messages');
@@ -1266,6 +1397,22 @@ $('previewMarkdownDraft').onclick=()=>{
   setComposerOptions(false);
   showContent('Markdown 预览',text,'markdown');
 };
+function wrapDraft(before, after = before, placeholder = '') {
+  const start = composerDraft.selectionStart, end = composerDraft.selectionEnd;
+  const selected = composerDraft.value.slice(start, end);
+  const inner = selected || placeholder;
+  composerDraft.setRangeText(before + inner + after, start, end, 'preserve');
+  const innerStart = start + before.length;
+  if (selected) composerDraft.setSelectionRange(innerStart, innerStart + inner.length);
+  else composerDraft.setSelectionRange(innerStart + inner.length, innerStart + inner.length);
+  composerDraft.focus();
+  composerDraft.dispatchEvent(new Event('input', {bubbles:true}));
+}
+$('mdBold').onclick=()=>wrapDraft('**','**','粗体');
+$('mdItalic').onclick=()=>wrapDraft('*','*','斜体');
+$('mdStrike').onclick=()=>wrapDraft('~~','~~','删除线');
+$('mdInlineCode').onclick=()=>wrapDraft('`','`','code');
+$('mdCodeBlock').onclick=()=>wrapDraft('\n```\n','\n```\n','代码块');
 $('clearMobileDraft').onclick=()=>{$('clearDraft').click();setComposerOptions(false);};
 optionsButton.onclick=()=>setComposerOptions(optionsButton.getAttribute('aria-expanded')!=='true');
 composerDraft.addEventListener('input',sizeComposerDraft);
