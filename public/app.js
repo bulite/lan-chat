@@ -333,9 +333,19 @@ const previewDialog=el('dialog','content-dialog');document.body.append(previewDi
 const markdown = globalThis.markdownit({html: false, linkify: false});
 markdown.renderer.rules.image = (tokens, index) => markdown.utils.escapeHtml(tokens[index].content);
 
-function renderMarkdown(content) {
+function parseRichMarkdown(content) {
+  const env={};
+  const tokens=markdown.parse(content,env);
+  const structural=tokens.some(token=>!['paragraph_open','paragraph_close','inline'].includes(token.type));
+  const inline=tokens.some(token=>token.children?.some(child=>!['text','softbreak'].includes(child.type)));
+  return structural||inline?{tokens,env}:null;
+}
+
+function renderMarkdown(content, parsed) {
   const article = el('article', 'markdown-preview');
-  article.innerHTML = markdown.render(content);
+  article.innerHTML = parsed
+    ? markdown.renderer.render(parsed.tokens,markdown.options,parsed.env)
+    : markdown.render(content);
   return article;
 }
 
@@ -800,16 +810,26 @@ function appendMessage(message, updateTasks = true) {
       const card = el('button', 'text-card');
       card.type = 'button';
       card.append(el('span', 'text-card-icon', '📄'), el('span', '', '文档 · ' + message.text.length + ' 字\n点击查看全文'));
-      card.onclick = () => showContent('消息全文', message.text, message.kind === 'agent' || speaker ? 'markdown' : 'text');
+      card.onclick = () => {
+        const format=message.kind==='agent'||speaker||parseRichMarkdown(message.text)?'markdown':'text';
+        showContent('消息全文',message.text,format);
+      };
       bubble.append(card);
-    } else if (message.kind === 'agent' || speaker) {
-      const text = el('button', 'agent-message-text', message.text);
-      text.type = 'button';
-      text.title = '点击打开 Markdown，右键或长按查看更多操作';
-      text.onclick = () => showContent('消息全文', message.text, 'markdown');
-      bubble.append(text);
     } else {
-      bubble.append(el(inlineMedia?'span':'div', '', message.text));
+      const rich=parseRichMarkdown(message.text);
+      if(rich){
+        const rendered=renderMarkdown(message.text,rich);
+        rendered.classList.add('message-markdown');
+        bubble.append(rendered);
+      }else if(message.kind==='agent'||speaker){
+        const text=el('button','agent-message-text',message.text);
+        text.type='button';
+        text.title='点击查看全文，右键或长按查看更多操作';
+        text.onclick=()=>showContent('消息全文',message.text,'markdown');
+        bubble.append(text);
+      }else{
+        bubble.append(el(inlineMedia?'span':'div','',message.text));
+      }
     }
   }
   if (message.assetId) {
@@ -1240,6 +1260,12 @@ function setComposerOptions(open){
   optionsButton.setAttribute('aria-expanded',String(open));
   optionsButton.closest('.composer').classList.toggle('options-open',open);
 }
+$('previewMarkdownDraft').onclick=()=>{
+  const text=composerDraft.value;
+  if(!text.trim()){$('notice').textContent='先输入消息，再预览 Markdown';composerDraft.focus();return;}
+  setComposerOptions(false);
+  showContent('Markdown 预览',text,'markdown');
+};
 $('clearMobileDraft').onclick=()=>{$('clearDraft').click();setComposerOptions(false);};
 optionsButton.onclick=()=>setComposerOptions(optionsButton.getAttribute('aria-expanded')!=='true');
 composerDraft.addEventListener('input',sizeComposerDraft);

@@ -7,7 +7,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="apple-touch-icon" href="/icon-192.png">
   <link rel="icon" type="image/svg+xml" href="/icon.svg">
-  <link rel="stylesheet" href="/style.css?v=workspace-24">
+  <link rel="stylesheet" href="/style.css?v=workspace-27">
 </head>
 <body>
   <section id="login">
@@ -22,10 +22,10 @@
     <aside id="roomSidebar" class="sidebar" aria-labelledby="roomsTitle">
       <div class="workspace-brand"><img class="brand" src="/icon.svg" alt=""><strong>邻聊</strong></div>
       <header>
-        <h2 id="roomsTitle">群聊</h2>
+        <h2 id="roomsTitle">频道</h2>
         <button id="addRoom" type="button" title="新建群聊" aria-label="新建群聊">＋</button>
       </header>
-      <div class="search"><input id="search" type="search" aria-label="搜索群聊" placeholder="搜索群聊"></div>
+      <div class="search"><input id="search" type="search" aria-label="搜索频道" placeholder="搜索频道"></div>
       <div id="rooms"></div>
       <footer>
         <span id="myName"></span>
@@ -69,6 +69,7 @@
         <div class="toolbar" id="composerOptions">
           <button id="pickFile" class="composer-icon-button" type="button" title="上传图片或文件，最大 25 MB" aria-label="上传图片或文件"><span class="composer-icon image-icon" aria-hidden="true"></span></button>
           <label class="composer-icon-button document-switch" title="按文档发送"><input id="asDocument" type="checkbox" aria-label="按文档发送"><span class="composer-icon document-icon" aria-hidden="true"></span></label>
+          <button id="previewMarkdownDraft" type="button">预览 Markdown</button>
           <button id="clearMobileDraft" type="button">清空草稿</button>
           <input id="file" type="file" hidden>
         </div>
@@ -88,14 +89,14 @@
 
     <aside id="memberPanel" aria-labelledby="memberPanelTitle" hidden>
       <header class="member-panel-header">
-        <div><h2 id="memberPanelTitle">协作</h2><p id="memberPanelRoom"></p></div>
+        <div><h2 id="memberPanelTitle">Agent 协作</h2><p id="memberPanelRoom"></p></div>
         <button id="closeMembers" type="button" aria-label="折叠协作侧栏">×</button>
       </header>
       <section class="member-section" aria-labelledby="roomRolesTitle">
-        <h3 id="roomRolesTitle">本群角色 <span id="roomRoleCount" class="member-count"></span></h3>
+        <h3 id="roomRolesTitle">本群 Agent <span id="roomRoleCount" class="member-count"></span></h3>
         <div id="roomRoles" class="member-list"></div>
         <details class="role-settings">
-          <summary>添加或设置角色</summary>
+          <summary>添加或设置 Agent</summary>
           <label>角色 <select id="roomRoleSelect"></select></label>
           <label>推理强度 <select id="roomEffort"></select></label>
           <button id="addRoomRole" type="button">保存设置</button>
@@ -114,7 +115,7 @@
       <section class="member-section"><button id="removeRoom" type="button" hidden>删除当前群聊</button></section>
       <section class="member-section" aria-labelledby="spaceMembersTitle">
         <h3 id="spaceMembersTitle">邻聊用户与 Agent <span id="memberCount" class="member-count"></span></h3>
-        <p>整个邻聊实例的账号，可用于定向通知。群里的角色见「本群角色」。</p>
+        <p>整个邻聊实例的账号，可用于定向通知。群里的角色见「本群 Agent」。</p>
         <div id="members" class="member-list"></div>
       </section>
     </aside>
@@ -192,6 +193,6 @@
     </form>
   </dialog>
   <script src="/markdown-it.min.js"></script>
-  <script src="/app.js?v=workspace-26" type="module"></script>
+  <script src="/app.js?v=workspace-27" type="module"></script>
 </body>
 </html>

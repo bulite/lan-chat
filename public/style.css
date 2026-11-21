@@ -243,33 +243,35 @@ input:focus-visible, textarea:focus-visible, button:focus-visible, a:focus-visib
 
 /* Collaboration console */
 :root {
-  --sidebar: #f8f9fc;
-  --canvas: #f3f5f9;
-  --line: #e0e5ee;
-  --ink: #202a3d;
-  --muted: #59657a;
-  --accent: #354eb8;
-  --accent-soft: #e9edff;
-  --send-bg: #354eb8;
-  --send-hover: #263e9c;
-  --self-surface: #e9edff;
+  --brand-red: #f5455c;
+  --sidebar: #f7f8fa;
+  --canvas: #f5f6f8;
+  --paper: #ffffff;
+  --line: #dfe3e8;
+  --ink: #2f343d;
+  --muted: #59606b;
+  --accent: #ae2241;
+  --accent-soft: #feecef;
+  --send-bg: #b92746;
+  --send-hover: #9e1836;
+  --self-surface: #fff0f2;
   --status-good: #197457;
-  --status-error: #a63d37;
+  --status-error: #ad2541;
 }
 :root[data-theme="dark"] {
-  --sidebar: #192133;
-  --canvas: #141b2b;
-  --paper: #202a3d;
-  --line: #36435a;
-  --ink: #eaf0fd;
-  --muted: #aab8cf;
-  --accent: #bac6ff;
-  --accent-soft: #303c65;
-  --send-bg: #536bd0;
-  --send-hover: #455ab6;
-  --self-surface: #303c65;
+  --sidebar: #262a32;
+  --canvas: #1f2329;
+  --paper: #2f343d;
+  --line: #444b57;
+  --ink: #f7f8fa;
+  --muted: #b7bdc7;
+  --accent: #ff9aab;
+  --accent-soft: #49323d;
+  --send-bg: #b92746;
+  --send-hover: #98213a;
+  --self-surface: #43323b;
   --status-good: #8cd9bf;
-  --status-error: #ffada6;
+  --status-error: #ff9aab;
 }
 #workspace, .chat-header, .composer, .message-search { background: var(--paper); }
 #workspace { position: relative; }
@@ -813,3 +815,18 @@ input:focus-visible, textarea:focus-visible, button:focus-visible, a:focus-visib
 .sticker-grid .asset-choice img {height:28px}
 .sticker-grid .asset-choice span {font-size:10px}
 @media(max-width:600px){.sticker-grid {grid-template-columns:repeat(7,minmax(0,1fr))}}
+
+
+#workspace .room.active {box-shadow:inset 3px 0 var(--brand-red)}
+#workspace .room.active .avatar {color:var(--accent);background:var(--accent-soft)}
+.chat-header,.member-panel-header {border-color:var(--line)}
+#workspace .bubble .text-card,#workspace .bubble .attachment {background:var(--paper);border-color:var(--line);color:var(--ink)}
+#workspace .bubble .text-card:hover,#workspace .bubble .attachment:hover {background:var(--accent-soft)}
+#workspace .attachment-name {color:var(--accent)}
+.bubble .message-markdown {line-height:inherit;max-width:100%}
+.bubble .message-markdown pre {max-width:100%;margin:6px 0}
+.bubble .message-markdown p + p {margin-top:0.5em}
+.bubble .message-markdown ul,.bubble .message-markdown ol {padding-inline-start:1.5em;margin:5px 0}
+.bubble .message-markdown h1,.bubble .message-markdown h2,.bubble .message-markdown h3 {font-size:1.15em}
+.bubble.contains-inline-media .message-markdown:has(> p:only-child),
+.bubble.contains-inline-media .message-markdown > p:only-child {display:inline}
