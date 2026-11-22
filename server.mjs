@@ -28,6 +28,7 @@ const json=async (req,limit)=>JSON.parse((await body(req,limit)).toString()||'{}
 const event=value=>{for(const peer of peers)peer.write(`data: ${JSON.stringify(value)}\n\n`);};
 const messageSelect=`SELECT m.id,m.room,r.name AS roomName,m.text,m.created,p.id AS senderId,p.name AS sender,p.kind,f.id AS fileId,f.name AS fileName,f.size AS fileSize FROM messages m JOIN rooms r ON r.id=m.room JOIN members p ON p.id=m.member LEFT JOIN files f ON f.id=m.file`;
 const dshOrigin=process.env.DSH_ORIGIN;
+const pluginApiOnly=process.env.CHAT_PLUGIN_API_ONLY==='true';
 const sharedAssets=assets(db,dir);
 let auditSupport;
 const roleSupport=roles(db,event,id=>comm.decorate(db.prepare(messageSelect+' WHERE m.id=?').get(id)),dshOrigin,(...args)=>auditSupport.publishStatus(...args));
@@ -37,6 +38,7 @@ const roleContextSupport=roleContext(db,event,comm,roleSupport,messageSelect,dir
 const server=http.createServer(async(req,res)=>{try{
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');
  const url=new URL(req.url,'http://localhost');const p=url.pathname;
+ if(pluginApiOnly&&p!=='/health'&&!p.startsWith('/api/'))return send(res,404,{error:'接口不存在'});
  const origin=req.headers.origin,chatOrigin='http://'+req.headers.host;
  const httpsOrigin='https://'+req.headers.host;
  const sameOrigin=origin===chatOrigin||(origin===httpsOrigin&&httpsOrigin===process.env.CHAT_PUBLIC_ORIGIN);
@@ -47,6 +49,7 @@ const server=http.createServer(async(req,res)=>{try{
  if(req.method==='GET'&&(p==='/'||p==='/app.js'||p==='/roles-ui.js'||p==='/style.css'||p==='/markdown-it.min.js'||p==='/icon.svg'||p==='/icon.png'||p==='/icon-192.png'||p==='/icon-512.png'||p==='/manifest.webmanifest')){const name=p==='/'?'index.html':p.slice(1);res.writeHead(200,{'Content-Type':name.endsWith('html')?'text/html; charset=utf-8':name.endsWith('js')?'text/javascript; charset=utf-8':name.endsWith('svg')?'image/svg+xml':name.endsWith('png')?'image/png':name.endsWith('.webmanifest')?'application/manifest+json':'text/css; charset=utf-8','Content-Security-Policy':"default-src 'self'; img-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'"});return res.end(fs.readFileSync(path.join(root,'public',name)));}
  if(p==='/health'){return send(res,200,{ok:true});}
  const token=(req.headers.authorization||'').replace(/^Bearer /,'');
+ if(pluginApiOnly&&!token)return send(res,401,{error:'请使用插件访问令牌'});
  if(p.startsWith('/api/admin/')){if(!equal(token,config.adminToken))return send(res,401,{error:'管理员令牌无效'});
   if(p==='/api/admin/members'&&req.method==='POST'){const b=await json(req);const name=String(b.name||'').trim().slice(0,50);if(!name) return send(res,400,{error:'请填写名称'});const member={id:randomUUID(),name,kind:b.kind==='agent'?'agent':'human',token:randomBytes(32).toString('hex')};db.prepare('INSERT INTO members(id,name,kind,token) VALUES(?,?,?,?)').run(member.id,member.name,member.kind,member.token);return send(res,201,member);}
   return send(res,404,{error:'接口不存在'});
