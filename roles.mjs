@@ -22,6 +22,10 @@ export function roles(db, event, selectMessage, dshOrigin, publishAuditStatus) {
     status TEXT NOT NULL DEFAULT 'pending', session_id TEXT, error TEXT,
     reply_message INTEGER, updated TEXT NOT NULL, claim_token TEXT, continuation_of INTEGER
   );
+  CREATE TABLE IF NOT EXISTS room_role_sessions (
+    room TEXT NOT NULL, role_id TEXT NOT NULL, session_id TEXT, job_id INTEGER,
+    PRIMARY KEY(room,role_id)
+  );
   CREATE TABLE IF NOT EXISTS role_job_origins(job_id INTEGER PRIMARY KEY,original_message INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS role_messages(message INTEGER PRIMARY KEY,role_id TEXT NOT NULL,role_name TEXT NOT NULL,provider TEXT NOT NULL,source_job INTEGER NOT NULL,target_role_id TEXT);
   CREATE TABLE IF NOT EXISTS role_decisions(source_job INTEGER PRIMARY KEY,reason TEXT);
@@ -41,6 +45,20 @@ export function roles(db, event, selectMessage, dshOrigin, publishAuditStatus) {
     model,status,session_id AS sessionId,error,reply_message AS replyMessage,continuation_of AS continuationOf,steer_parent AS steerParent,effort,updated
     ,(SELECT room FROM messages WHERE id=COALESCE((SELECT original_message FROM role_job_origins WHERE job_id=role_jobs.message),role_jobs.message)) AS room
     FROM role_jobs WHERE message=?`);
+  const roomSession=db.prepare('SELECT session_id,job_id FROM room_role_sessions WHERE room=? AND role_id=?');
+  const saveRoomSession=db.prepare(`INSERT INTO room_role_sessions(room,role_id,session_id,job_id) VALUES(?,?,?,?)
+    ON CONFLICT(room,role_id) DO UPDATE SET session_id=excluded.session_id,job_id=excluded.job_id`);
+  const sessionFromHistory=db.prepare(`SELECT j.message AS job_id,j.session_id FROM role_jobs j
+    LEFT JOIN role_job_origins o ON o.job_id=j.message
+    JOIN messages m ON m.id=COALESCE(o.original_message,j.message)
+    WHERE j.owner=? AND j.role_id=? AND m.room=? AND m.id<? AND j.steer_parent IS NULL
+      AND j.status IN ('replied','dismissed') AND j.session_id IS NOT NULL
+    ORDER BY m.id DESC,j.message DESC LIMIT 1`);
+  const earlierRoomWork=db.prepare(`SELECT 1 FROM role_jobs j
+    LEFT JOIN role_job_origins o ON o.job_id=j.message
+    JOIN messages m ON m.id=COALESCE(o.original_message,j.message)
+    WHERE j.owner=? AND j.role_id=? AND j.message<>? AND m.room=?
+      AND (j.status IN ('starting','running') OR (j.status='pending' AND m.id<?)) LIMIT 1`);
   const decorate=m=>{
     if(!m)return m;
     const ids=db.prepare('SELECT message FROM role_jobs WHERE message=? OR message IN (SELECT job_id FROM role_job_origins WHERE original_message=?) ORDER BY message').all(m.id,m.id);
@@ -198,14 +216,14 @@ export function roles(db, event, selectMessage, dshOrigin, publishAuditStatus) {
     }
     if(p==='/api/role-jobs'&&req.method==='GET') {
       if(member.kind!=='agent')return send(res,403,{error:'仅插件身份可读取任务'}),true;
-      const rows=db.prepare(`SELECT message FROM role_jobs WHERE owner=? AND status IN ('pending','starting','running') ORDER BY message LIMIT 100`).all(member.id);
+      const rows=db.prepare(`SELECT message FROM role_jobs WHERE owner=? AND status IN ('pending','starting','running') ORDER BY COALESCE((SELECT original_message FROM role_job_origins WHERE job_id=role_jobs.message),message),message LIMIT 100`).all(member.id);
       send(res,200,rows.map(({message})=>{const value=job.get(message);return {...value,messageData:selectMessage(value.sourceMessage)};}));return true;
     }
     if(p==='/api/role-blacklist/reset'&&req.method==='POST'){
       const n=db.prepare('DELETE FROM role_blacklist WHERE owner=?').run(member.id).changes;
       send(res,200,{ok:true,cleared:n});return true;
     }
-    const jm=p.match(/^\/api\/role-jobs\/(\d+)\/(claim|steer-claim|steer-release|waiting|started|fail|complete)$/);
+    const jm=p.match(/^\/api\/role-jobs\/(\d+)\/(claim|steer-claim|steer-release|waiting|started|reset-session|fail|complete)$/);
     if(jm&&req.method==='POST') {
       const id=Number(jm[1]),action=jm[2];
       const b=await json(req,action==='complete'?1024*1024:undefined),now=new Date().toISOString();
@@ -227,15 +245,12 @@ export function roles(db, event, selectMessage, dshOrigin, publishAuditStatus) {
         const value=job.get(id);event({type:'role-job',job:value});send(res,200,value);return true;
       } else if(action==='claim') {
         const token=text(b.claimToken,'领取标识',200);
-        const source=job.get(id).sourceMessage;
-        // Follow-ups sharing a session are processed in message order. They
-        // must never steer an earlier, still-running turn.
-        const busy=row.auto_routed?db.prepare("SELECT 1 FROM role_jobs j JOIN messages m ON m.id=COALESCE((SELECT original_message FROM role_job_origins WHERE job_id=j.message),j.message) WHERE j.owner=? AND j.role_id=? AND m.room=(SELECT room FROM messages WHERE id=?) AND m.id<? AND j.status IN ('pending','starting','running') LIMIT 1").get(member.id,row.role_id,source,source):row.session_id&&db.prepare("SELECT 1 FROM role_jobs j JOIN messages m ON m.id=COALESCE((SELECT original_message FROM role_job_origins WHERE job_id=j.message),j.message) WHERE j.owner=? AND j.session_id=? AND m.id<? AND j.status IN ('pending','starting','running') LIMIT 1").get(member.id,row.session_id,source);
-        if(row.status==='pending'&&!busy&&row.auto_routed){
-          const last=db.prepare("SELECT j.message,j.session_id FROM role_jobs j JOIN messages m ON m.id=COALESCE((SELECT original_message FROM role_job_origins WHERE job_id=j.message),j.message) WHERE j.owner=? AND j.role_id=? AND m.room=(SELECT room FROM messages WHERE id=?) AND m.id<? AND j.status='replied' AND j.session_id IS NOT NULL ORDER BY m.id DESC LIMIT 1").get(member.id,row.role_id,source,source);
-          if(last)db.prepare('UPDATE role_jobs SET session_id=?,continuation_of=? WHERE message=?').run(last.session_id,last.message,id);
+        const {room,sourceMessage}=job.get(id);
+        if(row.status==='pending'&&!earlierRoomWork.get(member.id,row.role_id,id,room,sourceMessage)){
+          const current=roomSession.get(room,row.role_id)??sessionFromHistory.get(member.id,row.role_id,room,sourceMessage);
+          db.prepare("UPDATE role_jobs SET status='starting',claim_token=?,updated=?,session_id=?,continuation_of=? WHERE message=? AND status='pending'")
+            .run(token,now,current?.session_id??null,current?.session_id?current.job_id:null,id);
         }
-        if(row.status==='pending'&&!busy)db.prepare("UPDATE role_jobs SET status='starting',claim_token=?,updated=? WHERE message=? AND status='pending'").run(token,now,id);
         const current=db.prepare('SELECT claim_token,status FROM role_jobs WHERE message=?').get(id);
         const value=job.get(id);event({type:'role-job',job:value});send(res,200,{...value,claimed:['starting','running'].includes(current.status)&&current.claim_token===token});return true;
       } else if(action==='waiting'){
@@ -244,12 +259,30 @@ export function roles(db, event, selectMessage, dshOrigin, publishAuditStatus) {
         const reason=text(b.reason,'等待原因',300);
         if(row.error!==reason){db.prepare('UPDATE role_jobs SET error=?,updated=? WHERE message=?').run(reason,now,id);event({type:'role-job',job:job.get(id)});}
         send(res,200,job.get(id));return true;
+      } else if(action==='reset-session'){
+        if(row.claim_token!==b.claimToken||!row.claim_token)return send(res,409,{error:'任务已由其他执行器领取'}),true;
+        if(row.status!=='starting'||row.steer_parent||typeof b.sessionId!=='string'||!b.sessionId)throw Error('当前任务不能更换会话');
+        const {room}=job.get(id), recorded=roomSession.get(room,row.role_id);
+        if(!row.session_id&&recorded?.session_id===null&&recorded.job_id===id)return send(res,200,job.get(id)),true;
+        if(b.sessionId!==row.session_id||recorded?.session_id&&recorded.session_id!==row.session_id)throw Error('当前群聊已绑定另一个会话');
+        db.exec('BEGIN IMMEDIATE');
+        try{
+          saveRoomSession.run(room,row.role_id,null,id);
+          db.prepare('UPDATE role_jobs SET session_id=NULL,continuation_of=NULL,error=NULL,updated=? WHERE message=?').run(now,id);
+          db.exec('COMMIT');
+        }catch(error){db.exec('ROLLBACK');throw error;}
+        const value=job.get(id);event({type:'role-job',job:value});send(res,200,value);return true;
       } else if(action==='started') {
         if(!row.claim_token||row.claim_token!==b.claimToken)return send(res,409,{error:'任务已由其他执行器领取'}),true;
         const session=text(b.sessionId,'会话标识',200);
         if(!['starting','running'].includes(row.status)||row.session_id&&row.session_id!==session)throw Error('任务状态或会话标识不匹配');
         if(row.status==='running'&&!row.error)return send(res,200,job.get(id)),true;
-        db.prepare("UPDATE role_jobs SET status='running',session_id=?,error=NULL,updated=? WHERE message=?").run(session,now,id);
+        db.exec('BEGIN IMMEDIATE');
+        try{
+          db.prepare("UPDATE role_jobs SET status='running',session_id=?,error=NULL,updated=? WHERE message=?").run(session,now,id);
+          if(!row.steer_parent)saveRoomSession.run(job.get(id).room,row.role_id,session,id);
+          db.exec('COMMIT');
+        }catch(error){db.exec('ROLLBACK');throw error;}
       } else if(action==='complete') {
         if(!row.claim_token||row.claim_token!==b.claimToken)return send(res,409,{error:'任务已由其他执行器领取'}),true;
         if(row.status==='replied')return send(res,200,{job:job.get(id),message:selectMessage(row.reply_message)}),true;

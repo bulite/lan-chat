@@ -101,7 +101,7 @@ const server=http.createServer(async(req,res)=>{try{
      db.prepare(`DELETE FROM role_jobs WHERE message IN (${jobs})`).run(id,id);
      db.prepare(`DELETE FROM role_job_origins WHERE original_message IN (${messages})`).run(id);
      for(const table of ['deliveries','message_meta','audit_jobs','reactions'])db.prepare(`DELETE FROM ${table} WHERE message IN (${messages})`).run(id);
-     for(const table of ['room_roles','room_auditors','role_blacklist','messages'])db.prepare(`DELETE FROM ${table} WHERE room=?`).run(id);
+     for(const table of ['room_roles','room_auditors','role_blacklist','room_role_sessions','messages'])db.prepare(`DELETE FROM ${table} WHERE room=?`).run(id);
      db.prepare('DELETE FROM rooms WHERE id=?').run(id);
      const removeFile=db.prepare('DELETE FROM files WHERE id=? AND NOT EXISTS (SELECT 1 FROM messages WHERE file=?) AND NOT EXISTS (SELECT 1 FROM shared_assets WHERE id=?)');
      files=files.filter(({file})=>removeFile.run(file,file,file).changes);
