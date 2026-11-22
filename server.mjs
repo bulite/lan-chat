@@ -39,6 +39,7 @@ const server=http.createServer(async(req,res)=>{try{
  res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');
  const url=new URL(req.url,'http://localhost');const p=url.pathname;
  if(pluginApiOnly&&p!=='/health'&&!p.startsWith('/api/'))return send(res,404,{error:'接口不存在'});
+ if(pluginApiOnly&&p==='/api/assets')return send(res,410,{error:'旧素材库已停用，请直接使用 Rocket.Chat 表情和图片工具'});
  const origin=req.headers.origin,chatOrigin='http://'+req.headers.host;
  const httpsOrigin='https://'+req.headers.host;
  const sameOrigin=origin===chatOrigin||(origin===httpsOrigin&&httpsOrigin===process.env.CHAT_PUBLIC_ORIGIN);

@@ -1,3 +1,4 @@
+import {randomUUID} from 'node:crypto';
 import {assetMaxBytes} from './assets.mjs';
 // Role-scoped chat operations. The plugin's authenticated identity must own
 // a currently running job for the supplied session; all operations stay in
@@ -5,7 +6,24 @@ import {assetMaxBytes} from './assets.mjs';
 import fs from 'node:fs';import path from 'node:path';
 const maxRocketFileSize = 5 * 1024 * 1024;
 const isRocketId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
-const rocketActions = new Set(['rocket-search', 'rocket-read', 'rocket-download', 'rocket-edit', 'rocket-delete', 'rocket-add-emoji', 'rocket-set-status', 'rocket-get-status', 'rocket-list-members']);
+const rocketActions = new Set(['rocket-search', 'rocket-read', 'rocket-download', 'rocket-edit', 'rocket-delete', 'rocket-add-emoji', 'rocket-set-avatar-image', 'rocket-set-status', 'rocket-get-status', 'rocket-list-members']);
+
+function imageBytes(base64){
+  if(typeof base64!=='string'||base64.length>Math.ceil(assetMaxBytes/3)*4||
+    base64.length%4!==0||!/^[A-Za-z0-9+/]+={0,2}$/.test(base64))throw Error('图片编码无效');
+  const bytes=Buffer.from(base64,'base64');
+  const png=bytes.subarray(0,8).toString('hex')==='89504e470d0a1a0a'&&bytes.subarray(12,16).toString()==='IHDR';
+  const jpeg=bytes.subarray(0,3).toString('hex')==='ffd8ff'&&bytes.subarray(-2).toString('hex')==='ffd9';
+  const gif=['GIF87a','GIF89a'].includes(bytes.subarray(0,6).toString('ascii'))&&bytes.at(-1)===0x3b;
+  const webp=bytes.subarray(0,4).toString('ascii')==='RIFF'&&bytes.subarray(8,12).toString('ascii')==='WEBP';
+  if(bytes.length>assetMaxBytes||!(png||jpeg||gif||webp))throw Error('图片须为 PNG、JPEG、GIF 或 WebP，且不超过 2 MiB');
+  return bytes;
+}
+
+function imageFilename(name){
+  if(typeof name!=='string'||!name.trim()||name.length>180)throw Error('图片文件名无效');
+  return name.trim().replace(/[\u0000-\u001f/\\]/g,'_');
+}
 
 async function requestRocketAction(payload) {
   const endpoint=process.env.CHAT_ROCKET_ACTION_URL;
@@ -82,13 +100,13 @@ export function roleContext(db,event,comm,roleSupport,select,dataDir,assets){
       if(action==='search'){
         if(typeof b.query!=='string'||!b.query.trim()||b.query.length>200)throw Error('请输入不超过 200 字符的搜索关键词');
         payload.query=b.query.trim();
-      }else if(action==='add-emoji'){
-        if(typeof b.assetId!=='string'||!(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/).test(b.assetId))throw Error('共享表情素材标识无效');
-        if(typeof b.name!=='string'||!(/^[a-z0-9_-]{1,40}$/).test(b.name))throw Error('表情名称须为 1 到 40 个小写字母、数字、下划线或连字符');
-        const owned=db.prepare("SELECT 1 FROM shared_assets a JOIN files f ON f.id=a.id WHERE a.id=? AND a.kind='sticker' AND f.owner=?").get(b.assetId,member.id);
-        if(!owned)throw Error('请使用当前插件账号自己发布的共享贴纸图片');
-        payload.assetId=b.assetId;
-        payload.name=b.name;
+      }else if(action==='add-emoji'||action==='set-avatar-image'){
+        imageBytes(b.base64);
+        payload.base64=b.base64;
+        if(action==='add-emoji'){
+          if(typeof b.name!=='string'||!/^[a-z0-9_-]{1,40}$/.test(b.name))throw Error('表情名称须为 1 到 40 个小写字母、数字、下划线或连字符');
+          payload.name=b.name;
+        }else payload.filename=imageFilename(b.filename);
       }else if(action==='set-status'){
         if(!['online','offline','away','busy'].includes(b.status))throw Error('状态必须为 online、offline、away 或 busy');
         payload.status=b.status;
@@ -121,9 +139,11 @@ export function roleContext(db,event,comm,roleSupport,select,dataDir,assets){
       send(res,200,value);return true;
     }
     if(b.action==='asset-list'){
+      if(process.env.CHAT_PLUGIN_API_ONLY==='true')throw Error('旧素材库已停用，请使用 Rocket.Chat 工具');
       send(res,200,assets.list(b.kind));return true;
     }
     if(b.action==='asset-upload'){
+      if(process.env.CHAT_PLUGIN_API_ONLY==='true')throw Error('旧素材库已停用，请使用 Rocket.Chat 工具');
       if(typeof b.base64!=='string'||b.base64.length>Math.ceil(assetMaxBytes/3)*4||
         b.base64.length%4!==0||!/^[A-Za-z0-9+/]+={0,2}$/.test(b.base64))throw Error('图片编码无效');
       send(res,201,assets.publish(b.kind,b.name,Buffer.from(b.base64,'base64'),member));return true;
@@ -178,9 +198,12 @@ export function roleContext(db,event,comm,roleSupport,select,dataDir,assets){
     }
     if(b.action==='send'){
       if(db.prepare('SELECT 1 FROM role_decisions WHERE source_job=?').get(s.job.message))throw Error('此任务已标记无需回复');
-      const fileId=b.assetId==null?null:assets.requireKind(b.assetId,'sticker');
+      let fileId=b.assetId==null?null:assets.requireKind(b.assetId,'sticker');
+      const image=b.base64===undefined?null:imageBytes(b.base64);
+      if(image&&fileId)throw Error('不能同时发送既有素材和新图片');
+      const filename=image?imageFilename(b.filename):null;
       const text=b.text??'';
-      if(typeof text!=='string'||(!text.trim()&&!fileId)||text.length>100000)throw Error('消息内容无效');
+      if(typeof text!=='string'||(!text.trim()&&!fileId&&!image)||text.length>100000)throw Error('消息内容无效');
       if(typeof b.clientMessageId!=='string'||!b.clientMessageId||b.clientMessageId.length>80)throw Error('需要不超过 80 字符的稳定消息标识');
       let target=null;
       if(b.targetRoleId!=null){
@@ -189,10 +212,30 @@ export function roleContext(db,event,comm,roleSupport,select,dataDir,assets){
       let targetJob=null;
       const clientMessageId='role-'+s.job.message+'-'+b.clientMessageId;
       const replyTo=b.replyTo??comm.priorRoleQuote(member.id,clientMessageId);
-      const result=comm.create({room:s.room,text,fileId,replyTo,asDocument:b.asDocument===true,clientMessageId},member,text.trim(),id=>{
-        db.prepare('INSERT INTO role_messages(message,role_id,role_name,provider,source_job,target_role_id) VALUES(?,?,?,?,?,?)').run(id,s.job.role_id,s.job.role_name,s.job.provider,s.job.message,target?.id??null);
-        if(target)targetJob=roleSupport.insertAdditionalJob(id,target);
-      });
+      let newFile;
+      if(image){
+        const previous=db.prepare(`SELECT m.file AS id,f.name FROM message_meta mm JOIN messages m ON m.id=mm.message
+          LEFT JOIN files f ON m.file=f.id WHERE mm.sender=? AND mm.client_id=?`).get(member.id,clientMessageId);
+        if(previous){
+          if(!previous.id||previous.name!==filename||!image.equals(fs.readFileSync(path.join(dataDir,'files',previous.id))))throw Error('消息标识已用于不同图片');
+          fileId=previous.id;
+        }else{
+          fileId=randomUUID();
+          newFile=path.join(dataDir,'files',fileId);
+          fs.writeFileSync(newFile,image,{flag:'wx'});
+        }
+      }
+      let result;
+      try{
+        result=comm.create({room:s.room,text,fileId,replyTo,asDocument:b.asDocument===true,clientMessageId},member,text.trim(),id=>{
+          if(newFile)db.prepare('INSERT INTO files(id,name,size,owner) VALUES(?,?,?,?)').run(fileId,filename,image.length,member.id);
+          db.prepare('INSERT INTO role_messages(message,role_id,role_name,provider,source_job,target_role_id) VALUES(?,?,?,?,?,?)').run(id,s.job.role_id,s.job.role_name,s.job.provider,s.job.message,target?.id??null);
+          if(target)targetJob=roleSupport.insertAdditionalJob(id,target);
+        });
+      }catch(error){
+        if(newFile&&!db.prepare('SELECT 1 FROM files WHERE id=?').get(fileId))fs.unlinkSync(newFile);
+        throw error;
+      }
       if(result.duplicate&&db.prepare('SELECT target_role_id FROM role_messages WHERE message=?').get(result.message.id)?.target_role_id!==(target?.id??null))throw Error('消息标识已用于不同目标');
       if(!result.duplicate){event({type:'message',message:result.message});if(targetJob!==null)event({type:'role-job',job:roleSupport.getJob(targetJob)});}
       send(res,result.duplicate?200:201,{message:result.message});return true;
