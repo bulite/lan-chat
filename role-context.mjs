@@ -6,7 +6,7 @@ import {assetMaxBytes} from './assets.mjs';
 import fs from 'node:fs';import path from 'node:path';
 const maxRocketFileSize = 5 * 1024 * 1024;
 const isRocketId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
-const rocketActions = new Set(['rocket-search', 'rocket-read', 'rocket-download', 'rocket-edit', 'rocket-delete', 'rocket-add-emoji', 'rocket-set-avatar-image', 'rocket-set-status', 'rocket-get-status', 'rocket-list-members']);
+const rocketActions = new Set(['rocket-search', 'rocket-read', 'rocket-download', 'rocket-edit', 'rocket-delete', 'rocket-add-emoji', 'rocket-rename-emoji', 'rocket-delete-emoji', 'rocket-set-avatar-image', 'rocket-set-status', 'rocket-get-status', 'rocket-list-members']);
 
 function imageBytes(base64){
   if(typeof base64!=='string'||base64.length>Math.ceil(assetMaxBytes/3)*4||
@@ -107,6 +107,13 @@ export function roleContext(db,event,comm,roleSupport,select,dataDir,assets){
           if(typeof b.name!=='string'||!/^[a-z0-9_-]{1,40}$/.test(b.name))throw Error('表情名称须为 1 到 40 个小写字母、数字、下划线或连字符');
           payload.name=b.name;
         }else payload.filename=imageFilename(b.filename);
+      }else if(action==='rename-emoji'||action==='delete-emoji'){
+        if(typeof b.name!=='string'||!/^[a-zA-Z0-9_.-]{1,80}$/.test(b.name))throw Error('请输入不带冒号的准确表情名称，不能用别名');
+        payload.name=b.name;
+        if(action==='rename-emoji'){
+          if(typeof b.newName!=='string'||!/^[a-z0-9_-]{1,40}$/.test(b.newName))throw Error('新名称须为 1 到 40 个小写字母、数字、下划线或连字符');
+          payload.newName=b.newName;
+        }
       }else if(action==='set-status'){
         if(!['online','offline','away','busy'].includes(b.status))throw Error('状态必须为 online、offline、away 或 busy');
         payload.status=b.status;
