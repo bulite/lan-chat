@@ -75,10 +75,15 @@ export function audits(db,event,selectMessage,roles,dshOrigin,adminToken){
     return status;
   }
   const summarize=x=>({id:x.id,sender:x.roleReply?.roleName||x.roleSender?.roleName||x.sender,senderRoleId:x.roleReply?.roleId||x.roleSender?.roleId||null,kind:x.kind,replyTo:x.replyTo,text:x.asDocument||x.text.length>600?`[文档，${x.text.length} 字，查看 /api/messages/${x.id}/content]`:x.text,...(x.fileId?{attachment:{description:(/\.(png|jpe?g|gif|webp|bmp)$/i.test(x.fileName)?'图片':'附件')+'：'+x.fileName,messageId:x.id,url:'/api/files/'+x.fileId}}:{})});
+  const originClientId=db.prepare(`SELECT client_id FROM message_meta WHERE message=
+    COALESCE((SELECT original_message FROM role_job_origins WHERE job_id=?),?)`);
   function enqueue(messageId,room,roleId,text,replyTo,fileId,senderKind){
     if(roleId||(!text&&!fileId))return;
-    const roleSender=senderKind==='agent'&&db.prepare('SELECT role_id,target_role_id FROM role_messages WHERE message=? UNION ALL SELECT role_id,NULL FROM role_jobs WHERE reply_message=? LIMIT 1').get(messageId,messageId);
+    const roleSender=senderKind==='agent'&&db.prepare('SELECT role_id,target_role_id,source_job FROM role_messages WHERE message=? UNION ALL SELECT role_id,NULL,message FROM role_jobs WHERE reply_message=? LIMIT 1').get(messageId,messageId);
     if(roleSender?.target_role_id)return;
+    // Rocket.Chat replies are posted back to the original message thread.
+    // Do not turn these replies into new automatic Agent tasks in the backing room.
+    if(roleSender?.source_job&&/^rocket-[0-9a-f]{64}$/.test(originClientId.get(roleSender.source_job,roleSender.source_job)?.client_id??''))return;
     // 规则前置：人类直接回复某条角色消息时，不调审计，直接派给该角色。
     if(senderKind==='human'&&Number.isSafeInteger(replyTo)){
       const quoted=selectMessage(replyTo);
