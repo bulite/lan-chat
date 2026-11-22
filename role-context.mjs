@@ -5,7 +5,7 @@ import {assetMaxBytes} from './assets.mjs';
 import fs from 'node:fs';import path from 'node:path';
 const maxRocketFileSize = 5 * 1024 * 1024;
 const isRocketId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
-const rocketActions = new Set(['rocket-search', 'rocket-read', 'rocket-download', 'rocket-edit', 'rocket-delete', 'rocket-add-emoji', 'rocket-set-status', 'rocket-get-status']);
+const rocketActions = new Set(['rocket-search', 'rocket-read', 'rocket-download', 'rocket-edit', 'rocket-delete', 'rocket-add-emoji', 'rocket-set-status', 'rocket-get-status', 'rocket-list-members']);
 
 async function requestRocketAction(payload) {
   const endpoint=process.env.CHAT_ROCKET_ACTION_URL;
@@ -92,6 +92,10 @@ export function roleContext(db,event,comm,roleSupport,select,dataDir,assets){
       }else if(action==='set-status'){
         if(!['online','offline','away','busy'].includes(b.status))throw Error('状态必须为 online、offline、away 或 busy');
         payload.status=b.status;
+      }else if(action==='list-members'){
+        const offset=b.offset===undefined?0:b.offset;
+        if(!Number.isSafeInteger(offset)||offset<0)throw Error('Rocket.Chat 成员列表偏移量无效');
+        payload.offset=offset;
       }else if(action==='get-status'){
         if(b.username!==undefined){
           if(typeof b.username!=='string'||!/^[a-zA-Z0-9_.-]{1,80}$/.test(b.username))throw Error('Rocket.Chat 用户名无效');
