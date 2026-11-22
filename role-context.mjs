@@ -3,6 +3,42 @@ import {assetMaxBytes} from './assets.mjs';
 // a currently running job for the supplied session; all operations stay in
 // that job's room and never alter the separately bound inbox session.
 import fs from 'node:fs';import path from 'node:path';
+const maxRocketFileSize = 5 * 1024 * 1024;
+const isRocketId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+const rocketActions = new Set(['rocket-search', 'rocket-read', 'rocket-download', 'rocket-edit', 'rocket-delete']);
+
+async function requestRocketAction(payload) {
+  const endpoint=process.env.CHAT_ROCKET_ACTION_URL;
+  const tokenFile=process.env.CHAT_ROCKET_ACTION_TOKEN_FILE;
+  if(!endpoint||!tokenFile)throw Error('当前服务尚未接通 Rocket.Chat 操作');
+  const target=new URL(endpoint);
+  if(!['http:','https:'].includes(target.protocol)||target.username||target.password)throw Error('Invalid action URL');
+  const token=(await fs.promises.readFile(tokenFile,'utf8')).trim();
+  if(!token)throw Error('Missing action token');
+  const result=await fetch(target,{
+    method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+    body:JSON.stringify(payload),redirect:'error',signal:AbortSignal.timeout(12000),
+  });
+  if(!result.ok){
+    await result.body?.cancel();
+    if(result.status===403)throw Error('该操作超出当前角色的聊天权限');
+    if(result.status===404)throw Error('未找到当前 Rocket.Chat 会话或指定消息');
+    if(result.status===413)throw Error('Rocket.Chat 附件超过 5 MiB');
+    throw Error('Rocket.Chat 拒绝该操作或暂时不可用');
+  }
+  if(result.status===204)return {ok:true};
+
+  const limit=payload.action==='download'?Math.ceil(maxRocketFileSize/3)*4+4096:1024*1024;
+  const chunks=[];
+  let size=0;
+  for await(const chunk of result.body){
+    size+=chunk.byteLength;
+    if(size>limit)throw Error('Rocket.Chat 返回的数据超过大小限制');
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
+
 export function roleContext(db,event,comm,roleSupport,select,dataDir,assets){
   const summarize=m=>({id:m.id,sender:m.roleReply?.roleName||m.roleSender?.roleName||m.sender,roleId:m.roleReply?.roleId||m.roleSender?.roleId||null,kind:m.kind,replyTo:m.replyTo,created:m.created,text:m.asDocument||m.text.length>300?`[文档 ${m.text.length} 字；使用消息读取工具查看 #${m.id}]`:m.text,...(m.fileId?{attachment:{id:m.fileId,name:m.fileName,description:/\.(png|jpe?g|gif|webp|bmp)$/i.test(m.fileName)?'图片':'附件'}}:{})});
   function scope(sessionId,member){
@@ -32,26 +68,38 @@ export function roleContext(db,event,comm,roleSupport,select,dataDir,assets){
         : null;
       if(!name)throw Error('请用表情短码，例如 :thumbsup:');
       if(b.shouldReact!==undefined&&typeof b.shouldReact!=='boolean')throw Error('shouldReact 必须为布尔值');
-      const endpoint=process.env.CHAT_ROCKET_ACTION_URL;
-      const tokenFile=process.env.CHAT_ROCKET_ACTION_TOKEN_FILE;
-      if(!endpoint||!tokenFile)throw Error('当前服务尚未接通 Rocket.Chat 表情回应');
-      try{
-        const target=new URL(endpoint);
-        if(!['http:','https:'].includes(target.protocol)||target.username||target.password)throw Error('Invalid action URL');
-        const token=(await fs.promises.readFile(tokenFile,'utf8')).trim();
-        if(!token)throw Error('Missing action token');
-        const result=await fetch(target,{
-          method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
-          body:JSON.stringify({action:'react',sourceMessageId:s.source,roleId:s.job.role_id,
-            emoji:':'+(name[1]||name[2])+':',shouldReact:b.shouldReact??true}),
-          redirect:'error',signal:AbortSignal.timeout(4500),
-        });
-        await result.body?.cancel();
-        if(!result.ok)throw Error('Reaction rejected');
+      try {
+        await requestRocketAction({action:'react',sourceMessageId:s.source,roleId:s.job.role_id,
+          emoji:':'+(name[1]||name[2])+':',shouldReact:b.shouldReact??true});
       }catch{
         throw Error('未能在 Rocket.Chat 保存表情回应；确认这条消息来自 Rocket.Chat，且表情短码有效');
       }
       send(res,200,{ok:true});return true;
+    }
+    if(rocketActions.has(b.action)){
+      const action=b.action.slice(7);
+      const payload={action,sourceMessageId:s.source,roleId:s.job.role_id};
+      if(action==='search'){
+        if(typeof b.query!=='string'||!b.query.trim()||b.query.length>200)throw Error('请输入不超过 200 字符的搜索关键词');
+        payload.query=b.query.trim();
+      }else{
+        if(!isRocketId(b.rocketMessageId))throw Error('Rocket.Chat 消息标识无效');
+        payload.rocketMessageId=b.rocketMessageId;
+        if(action==='edit'){
+          if(typeof b.text!=='string'||!b.text.trim()||b.text.length>100000)throw Error('消息内容无效');
+          payload.text=b.text;
+        }
+        if(action==='download'){
+          if(!isRocketId(b.fileId))throw Error('Rocket.Chat 附件标识无效');
+          payload.fileId=b.fileId;
+        }
+      }
+      const value=await requestRocketAction(payload);
+      if(action==='download'&&(!Number.isSafeInteger(value?.size)||value.size<0||value.size>maxRocketFileSize||
+        typeof value.name!=='string'||typeof value.base64!=='string'||value.base64.length>Math.ceil(value.size/3)*4)){
+        throw Error('Rocket.Chat 附件响应无效');
+      }
+      send(res,200,value);return true;
     }
     if(b.action==='asset-list'){
       send(res,200,assets.list(b.kind));return true;
