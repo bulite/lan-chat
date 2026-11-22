@@ -5,7 +5,7 @@ import {assetMaxBytes} from './assets.mjs';
 import fs from 'node:fs';import path from 'node:path';
 const maxRocketFileSize = 5 * 1024 * 1024;
 const isRocketId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
-const rocketActions = new Set(['rocket-search', 'rocket-read', 'rocket-download', 'rocket-edit', 'rocket-delete', 'rocket-add-emoji']);
+const rocketActions = new Set(['rocket-search', 'rocket-read', 'rocket-download', 'rocket-edit', 'rocket-delete', 'rocket-add-emoji', 'rocket-set-status']);
 
 async function requestRocketAction(payload) {
   const endpoint=process.env.CHAT_ROCKET_ACTION_URL;
@@ -89,6 +89,9 @@ export function roleContext(db,event,comm,roleSupport,select,dataDir,assets){
         if(!owned)throw Error('请使用当前插件账号自己发布的共享贴纸图片');
         payload.assetId=b.assetId;
         payload.name=b.name;
+      }else if(action==='set-status'){
+        if(!['online','offline','away','busy'].includes(b.status))throw Error('状态必须为 online、offline、away 或 busy');
+        payload.status=b.status;
       }else{
         if(!isRocketId(b.rocketMessageId))throw Error('Rocket.Chat 消息标识无效');
         payload.rocketMessageId=b.rocketMessageId;
