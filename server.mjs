@@ -116,7 +116,13 @@ const server=http.createServer(async(req,res)=>{try{
  const messageDetails=p.match(/^\/api\/messages\/(\d+)$/);
  if(messageDetails&&req.method==='GET'){
    const message=db.prepare(messageSelect+' WHERE m.id=? AND m.room=?').get(Number(messageDetails[1]),url.searchParams.get('room'));
-   return message?send(res,200,comm.decorate(message)):send(res,404,{error:'找不到该群里的引用消息'});
+   if(!message)return send(res,404,{error:'找不到该群里的引用消息'});
+   const value=comm.decorate(message);
+   const sent=db.prepare('SELECT message FROM role_messages WHERE source_job=? ORDER BY message');
+   for(const job of value.roleJobs||(value.roleJob?[value.roleJob]:[])){
+     if(job.status==='replied')job.sentMessageIds=[...new Set([...sent.all(job.message).map(row=>row.message),job.replyMessage])];
+   }
+   return send(res,200,value);
  }
  const messageContent=p.match(/^\/api\/messages\/(\d+)\/content$/);
  if(messageContent&&req.method==='GET'){const row=db.prepare('SELECT text FROM messages WHERE id=?').get(Number(messageContent[1]));if(!row)return send(res,404,{error:'消息不存在'});res.writeHead(200,{'Content-Type':'text/plain; charset=utf-8','Cache-Control':'no-store','Content-Security-Policy':"default-src 'none'"});return res.end(row.text);}

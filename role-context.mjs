@@ -15,12 +15,43 @@ export function roleContext(db,event,comm,roleSupport,select,dataDir,assets){
   async function route(req,res,url,member,{send,json}){
     if(url.pathname!=='/api/role-session' || req.method!=='POST')return false;
     const b=await json(req,Math.ceil(assetMaxBytes/3)*4+4096);let s=scope(b.sessionId,member);
-    const replySource=b.action==='send'?(b.sourceMessageId??b.replyTo):['skip','sent'].includes(b.action)?b.messageId:null;
+    const replySource=b.action==='send'?(b.sourceMessageId??b.replyTo):['skip','sent','react'].includes(b.action)?b.messageId:null;
     if(replySource!=null){
       if(!Number.isSafeInteger(replySource))throw Error('消息标识无效');
       const child=db.prepare("SELECT * FROM role_jobs WHERE owner=? AND session_id=? AND steer_parent=? AND status IN ('starting','running') AND COALESCE((SELECT original_message FROM role_job_origins WHERE job_id=role_jobs.message),message)=? LIMIT 1").get(member.id,b.sessionId,s.job.message,replySource);
-      if(child){const message=comm.decorate(db.prepare(select+' WHERE m.id=?').get(replySource));s={...s,job:child,source:replySource,message};}
-      else if((['skip','sent'].includes(b.action)||b.sourceMessageId!=null)&&replySource!==s.source)throw Error('该消息不属于当前回合的角色任务');
+      if(child){
+        const message=comm.decorate(db.prepare(select+' WHERE m.id=?').get(replySource));
+        if(b.action==='react'&&message?.room!==s.room)throw Error('该消息不属于当前回合的角色任务');
+        s={...s,job:child,source:replySource,message};
+      }
+      else if((['skip','sent','react'].includes(b.action)||b.sourceMessageId!=null)&&replySource!==s.source)throw Error('该消息不属于当前回合的角色任务');
+    }
+    if(b.action==='react'){
+      const name=typeof b.emoji==='string'&&b.emoji.length<=66
+        ? /^(?::([a-zA-Z0-9_+.-]{1,64}):|([a-zA-Z0-9_+.-]{1,64}))$/.exec(b.emoji)
+        : null;
+      if(!name)throw Error('请用表情短码，例如 :thumbsup:');
+      if(b.shouldReact!==undefined&&typeof b.shouldReact!=='boolean')throw Error('shouldReact 必须为布尔值');
+      const endpoint=process.env.CHAT_ROCKET_ACTION_URL;
+      const tokenFile=process.env.CHAT_ROCKET_ACTION_TOKEN_FILE;
+      if(!endpoint||!tokenFile)throw Error('当前服务尚未接通 Rocket.Chat 表情回应');
+      try{
+        const target=new URL(endpoint);
+        if(!['http:','https:'].includes(target.protocol)||target.username||target.password)throw Error('Invalid action URL');
+        const token=(await fs.promises.readFile(tokenFile,'utf8')).trim();
+        if(!token)throw Error('Missing action token');
+        const result=await fetch(target,{
+          method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json'},
+          body:JSON.stringify({action:'react',sourceMessageId:s.source,roleId:s.job.role_id,
+            emoji:':'+(name[1]||name[2])+':',shouldReact:b.shouldReact??true}),
+          redirect:'error',signal:AbortSignal.timeout(4500),
+        });
+        await result.body?.cancel();
+        if(!result.ok)throw Error('Reaction rejected');
+      }catch{
+        throw Error('未能在 Rocket.Chat 保存表情回应；确认这条消息来自 Rocket.Chat，且表情短码有效');
+      }
+      send(res,200,{ok:true});return true;
     }
     if(b.action==='asset-list'){
       send(res,200,assets.list(b.kind));return true;
