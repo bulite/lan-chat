@@ -5,7 +5,7 @@ import {assetMaxBytes} from './assets.mjs';
 import fs from 'node:fs';import path from 'node:path';
 const maxRocketFileSize = 5 * 1024 * 1024;
 const isRocketId = value => typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
-const rocketActions = new Set(['rocket-search', 'rocket-read', 'rocket-download', 'rocket-edit', 'rocket-delete']);
+const rocketActions = new Set(['rocket-search', 'rocket-read', 'rocket-download', 'rocket-edit', 'rocket-delete', 'rocket-add-emoji']);
 
 async function requestRocketAction(payload) {
   const endpoint=process.env.CHAT_ROCKET_ACTION_URL;
@@ -82,6 +82,13 @@ export function roleContext(db,event,comm,roleSupport,select,dataDir,assets){
       if(action==='search'){
         if(typeof b.query!=='string'||!b.query.trim()||b.query.length>200)throw Error('请输入不超过 200 字符的搜索关键词');
         payload.query=b.query.trim();
+      }else if(action==='add-emoji'){
+        if(typeof b.assetId!=='string'||!(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/).test(b.assetId))throw Error('共享表情素材标识无效');
+        if(typeof b.name!=='string'||!(/^[a-z0-9_-]{1,40}$/).test(b.name))throw Error('表情名称须为 1 到 40 个小写字母、数字、下划线或连字符');
+        const owned=db.prepare("SELECT 1 FROM shared_assets a JOIN files f ON f.id=a.id WHERE a.id=? AND a.kind='sticker' AND f.owner=?").get(b.assetId,member.id);
+        if(!owned)throw Error('请使用当前插件账号自己发布的共享贴纸图片');
+        payload.assetId=b.assetId;
+        payload.name=b.name;
       }else{
         if(!isRocketId(b.rocketMessageId))throw Error('Rocket.Chat 消息标识无效');
         payload.rocketMessageId=b.rocketMessageId;
